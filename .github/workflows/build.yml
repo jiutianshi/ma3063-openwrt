@@ -105,16 +105,31 @@ jobs:
         working-directory: openwrt
         run: |
           set -euo pipefail
-          # 内核 5.15.150 相对 hzyitc 的 config-5.15 新增了 ARM64_EPAN 符号；OpenWrt 在
-          # target/linux/compile 阶段会用 config 模板重新生成内核 .config，模板里未声明
-          # 该符号会导致 syncconfig 在非交互下因 NEW 符号崩溃。修复：在 config 模板里
-          # 显式声明，从源头消除 NEW（prepare/olddefconfig 会被 compile 重新生成覆盖，无效）。
+          # 内核 5.15.150 相对 hzyitc 的 config-5.15 新增了若干架构符号
+          # (ARM64_EPAN / ARM64_PA_BITS_48 / QCOM_CLK_APCC_MSM8996 等)。OpenWrt 在
+          # target/linux/compile 阶段会用 config 模板重新生成内核 .config，模板里未声明的
+          # 符号会在 syncconfig/oldconfig 时被当 NEW 提示；若 stdin 是 TTY(GitHub Actions 默认)
+          # 则非交互下因无法应答而崩溃。两道防线：
+          #  1) 在 config 模板里显式声明已知缺失符号，从源头消除 NEW；
+          #  2) 用 yes '' 喂空行，让 kconfig 对仍出现的 NEW 符号一律取默认值(非交互安全)。
           for f in target/linux/ipq50xx/config-5.15 target/linux/ipq50xx/config-5.15.aarch64; do
             [ -f "$f" ] || continue
-            grep -q "CONFIG_ARM64_EPAN" "$f" || echo "CONFIG_ARM64_EPAN=y" >> "$f"
+            {
+              grep -q "CONFIG_ARM64_EPAN" "$f"        || echo "CONFIG_ARM64_EPAN=y"
+              grep -q "CONFIG_ARM64_PA_BITS_48" "$f"  || echo "CONFIG_ARM64_PA_BITS_48=y"
+              grep -q "CONFIG_ARM64_VA_BITS_39" "$f"  || echo "CONFIG_ARM64_VA_BITS_39=y"
+              grep -q "CONFIG_ARM64_4K_PAGES" "$f"    || echo "CONFIG_ARM64_4K_PAGES=y"
+              grep -q "CONFIG_QCOM_CLK_APCC_MSM8996" "$f" || echo "# CONFIG_QCOM_CLK_APCC_MSM8996 is not set"
+            } >> "$f"
             echo "patched $f"
           done
-          make -j$(nproc) V=s 2>&1 | tee build.log
+          # yes '' 提供空行应答，使任何残留 NEW 符号取默认；正确捕获 make 退出码
+          # (yes 在 make 结束后会收到 SIGPIPE，不能用 pipefail 直接判定)。
+          set +o pipefail
+          yes '' | make -j$(nproc) V=s 2>&1 | tee build.log
+          rc=${PIPESTATUS[1]}
+          set -o pipefail
+          if [ "$rc" -ne 0 ]; then echo "make failed rc=$rc"; exit "$rc"; fi
 
       - name: Upload firmware artifact (GitHub UI download)
         if: success()
