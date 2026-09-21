@@ -9,6 +9,9 @@ on:
       - 'config-ma3063.seed'
       - '.github/workflows/build.yml'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -98,11 +101,32 @@ jobs:
 
       - name: Build
         working-directory: openwrt
-        run: make -j$(nproc) V=s
+        run: |
+          set -euo pipefail
+          make -j$(nproc) V=s 2>&1 | tee build.log
 
-      - name: Upload firmware artifact
+      - name: Upload firmware artifact (GitHub UI download)
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-ma3063
           path: openwrt/bin/targets/ipq50xx/aarch64/*
           if-no-files-found: error
+
+      - name: Publish build log + firmware to build-output branch
+        if: always()
+        run: |
+          set -euo pipefail
+          WS="$GITHUB_WORKSPACE"
+          git config --global user.email "wb@local"
+          git config --global user.name "WorkBuddy"
+          cd "$WS/ma3063-patches"
+          cp "$WS/openwrt/build.log" build.log 2>/dev/null || true
+          mkdir -p firmware
+          cp "$WS/openwrt/bin/targets/ipq50xx/aarch64/"*.ubi firmware/ 2>/dev/null || true
+          cp "$WS/openwrt/bin/targets/ipq50xx/aarch64/"*sysupgrade* firmware/ 2>/dev/null || true
+          git remote set-url origin "https://${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git checkout -B build-output
+          git add -A
+          git commit -m "build output [skip ci]" || echo "nothing to commit"
+          git push --force origin build-output
