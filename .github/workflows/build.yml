@@ -105,10 +105,14 @@ jobs:
         working-directory: openwrt
         run: |
           set -euo pipefail
-          # prepare 会解包/打补丁内核并跑 olddefconfig；之后 kernel_olddefconfig
-          # 消化 5.15.150 相对 hzyitc config-5.15 新增的未设置符号(ARM64_EPAN 等)，
-          # 避免正式编译时 syncconfig 因 NEW 符号在非交互下崩溃
-          { make target/linux/prepare V=s; make kernel_olddefconfig V=s; make -j$(nproc) V=s; } 2>&1 | tee build.log
+          # 解包/打补丁内核（OpenWrt 内部已对内核跑 olddefconfig，不触发 NEW 符号交互）
+          make target/linux/prepare V=s
+          # 23.05 顶层不存在 kernel_olddefconfig target；直接在内核源码目录消化
+          # 5.15.150 新增的未设置符号(ARM64_EPAN 等)，避免正式编译时 syncconfig 崩溃
+          LINUX_DIR=$(find build_dir -maxdepth 5 -type d -name 'linux-5.15*' | head -1)
+          echo "LINUX_DIR=$LINUX_DIR"
+          [ -n "$LINUX_DIR" ] && make -C "$LINUX_DIR" ARCH=arm64 olddefconfig
+          make -j$(nproc) V=s 2>&1 | tee build.log
 
       - name: Upload firmware artifact (GitHub UI download)
         if: success()
