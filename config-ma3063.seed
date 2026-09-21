@@ -1,0 +1,9 @@
+CONFIG_TARGET_ipq50xx=y
+CONFIG_TARGET_ipq50xx_aarch64=y
+CONFIG_TARGET_ipq50xx_aarch64_DEVICE_ruijie_rg-ma3063=y
+CONFIG_PACKAGE_ath11k-firmware-ipq5018=y
+CONFIG_PACKAGE_ath11k-firmware-qcn6122=y
+CONFIG_PACKAGE_ipq-wifi-cmcc_rax3000q=y
+CONFIG_PACKAGE_wpad-basic-wolfssl=y
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-ssl=y
