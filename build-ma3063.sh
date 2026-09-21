@@ -122,24 +122,29 @@ s = open(p, encoding='utf-8', errors='replace').read()
 if 'MA3063_NOSYNC' in s:
     print("conf.c already patched, skip"); sys.exit(0)
 lines = s.splitlines(keepends=True)
-# Primary anchor: case syncconfig: immediately followed by the check_conf loop comment
+# Correct anchor: check_conf()'s 'default:' branch (the one that falls through to
+# conf(rootEntry) and prompts). When input_mode==syncconfig, we must NOT prompt;
+# instead set all not-yet-valued NEW symbols to their Kconfig default and break.
+# (conf_set_all_new_symbols in main() runs only once and misses symbols that
+#  re-emerge as unvalued/changeable after a choice override, e.g. ETM4X_IMPDEF_FEATURE.)
+done = False
 for k, l in enumerate(lines):
-    if l.strip() == 'case syncconfig:' and k + 1 < len(lines) \
-       and 'Update until a loop caused no more changes' in lines[k + 1]:
-        lines.insert(k + 1, '\t\tconf_set_all_new_symbols(def_default); /* MA3063_NOSYNC */\n')
-        print("patched conf.c via check_conf-loop anchor (NEW symbols get default before check_conf)")
+    if l.strip() == 'default:' and k + 1 < len(lines) \
+       and 'if (!conf_cnt++)' in lines[k + 1]:
+        indent = l[:len(l) - len(l.lstrip())]      # indentation of 'default:'
+        inner = indent + '\t'
+        block = (indent + 'default:\n'
+                 + inner + 'if (input_mode == syncconfig) {\n'
+                 + inner + '\tconf_set_all_new_symbols(def_default); /* MA3063_NOSYNC */\n'
+                 + inner + '\tbreak;\n'
+                 + inner + '}\n')
+        lines[k] = block
+        print("patched conf.c via check_conf default branch (syncconfig sets default, no prompt)")
+        done = True
         break
-else:
-    # Fallback: insert right after conf_read(NULL); inside a 'case syncconfig:' block
-    for k, l in enumerate(lines):
-        if l.strip() == 'case syncconfig:' and k + 1 < len(lines) \
-           and lines[k + 1].strip() == 'conf_read(NULL);':
-            lines.insert(k + 2, '\t\tconf_set_all_new_symbols(def_default); /* MA3063_NOSYNC */\n')
-            print("patched conf.c via conf_read fallback")
-            break
-    else:
-        print("ERROR: no known syncconfig anchor found in %s" % p)
-        sys.exit(2)
+if not done:
+    print("ERROR: no check_conf 'default:' anchor found in %s" % p)
+    sys.exit(2)
 open(p, 'w').write(''.join(lines))
 PYEOF
 rc=$?
