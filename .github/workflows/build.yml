@@ -105,19 +105,17 @@ jobs:
         working-directory: openwrt
         run: |
           set -euo pipefail
-          # 第8次构建：根治 syncconfig 的 NEW 符号崩溃。
-          # 5.15.150 内核相对 hzyitc 的 config-5.15 模板多出一批 NEW 符号（既有 ARM64 架构符号，
-          # 也有驱动符号如 ETM4X_IMPDEF_FEATURE、QCOM_CLK_APCC_MSM8996 等）。OpenWrt 在
-          # target/linux/compile 阶段用 syncconfig 生成 auto.conf，syncconfig 遇到 NEW 符号在
-          # 非 TTY(stdin=/dev/null) 下直接报错退出、且不读 stdin——所以"逐个补符号"和
-          # "yes '' 喂空行"都无法根治（会不断冒新的 NEW）。
-          # 根治：prepare 解包内核生成初始 .config → olddefconfig 把所有 NEW 一次性固化成
-          # 默认值 → 把这份完整的 .config 写回 config-5.15 模板，使后续 compile 的 syncconfig
-          # 再无 NEW 可报（模块注入 =y 时符号已声明，不算 NEW）。
+          # 第9次构建：根治 syncconfig 的 NEW 符号崩溃（根因已在第8次复盘定位）。
+          # 关键事实：ipq50xx 是 SUBTARGETS(arm/aarch64) 目标，aarch64 子目标编译读取的是
+          # target/linux/ipq50xx/config-5.15（父级；aarch64/config-5.15 在上游不存在）。
+          # 5.15.150 内核相对该模板多出一批 NEW 符号（ARM64_PA_BITS_48、NR_CPUS、ETM4X_IMPDEF_FEATURE 等）。
+          # 第8次教训：裸 "make -C $LINUX olddefconfig" 未指定 ARCH，内核按 HOST(x86_64) 生成 .config，
+          # 其中无 ARM64_* 符号，写回模板反而污染；compile 以 ARCH=arm64 重建时这些又成 NEW → 崩溃。
+          # 根治：OpenWrt 的 prepare 阶段内部已用 ARCH=arm64 跑 oldconfig 生成【完整 arm64 .config】，
+          # 直接捕获这份 .config 写回模板即可，不再自己裸跑 olddefconfig。
           #
-          # (a) 先补已知架构符号到模板，降低 prepare 阶段 oldconfig 的交互风险
-          for f in target/linux/ipq50xx/config-5.15 target/linux/ipq50xx/config-5.15.aarch64; do
-            [ -f "$f" ] || continue
+          # (a) 给所有候选 config-5.15（find 覆盖父级与可能存在的子目标）补已知架构符号，降低交互风险
+          for f in $(find target/linux/ipq50xx -name 'config-5.15*' 2>/dev/null); do
             {
               grep -q "CONFIG_ARM64_EPAN" "$f"        || echo "CONFIG_ARM64_EPAN=y"
               grep -q "CONFIG_ARM64_PA_BITS_48" "$f"  || echo "CONFIG_ARM64_PA_BITS_48=y"
@@ -127,16 +125,19 @@ jobs:
             } >> "$f"
             echo "patched $f"
           done
-          # (b) 解包内核并生成初始 .config（make target/linux/prepare）
+          # (b) 解包内核并生成【完整 arm64】.config（OpenWrt 以 ARCH=arm64 跑 oldconfig，已固化全部 NEW）
           make target/linux/prepare V=s
           LINUX=$(ls -d build_dir/target-aarch64_cortex-a53_musl/linux-ipq50xx_aarch64/linux-5.15.150 2>/dev/null | head -1)
           [ -n "$LINUX" ] || { echo "linux source dir not found"; exit 1; }
           echo "linux source dir: $LINUX"
-          # (c) 固化所有 NEW 符号为默认值，从源头消除 syncconfig 的 NEW 报错
-          make -C "$LINUX" KCONFIG_CONFIG=.config olddefconfig
-          # (d) 把固化的完整 .config 写回 config 模板，compile 将基于无 NEW 的模板重新生成 .config
-          cp "$LINUX/.config" target/linux/ipq50xx/config-5.15
-          echo "config-5.15 refreshed from olddefconfig (no NEW symbols)"
+          # (c) 以 ARCH=arm64 复核并固化（保险；与 prepare 同源，不会架构错乱）
+          make -C "$LINUX" ARCH=arm64 olddefconfig
+          # (d) 把完整 arm64 .config 写回模板（父级 + aarch64 子目标若存在），compile 将基于无 NEW 的模板重建
+          for f in target/linux/ipq50xx/config-5.15 target/linux/ipq50xx/aarch64/config-5.15; do
+            [ -f "$f" ] || continue
+            cp "$LINUX/.config" "$f"
+            echo "refreshed $f from arm64 .config"
+          done
           # (e) 正式编译；yes '' 兜底任何残留交互提示，并正确捕获 make 退出码
           set +o pipefail
           yes '' | make -j$(nproc) V=s 2>&1 | tee build.log
