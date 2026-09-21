@@ -90,7 +90,7 @@ fi
 [ -n "$LINUX" ] || { echo "ERROR: kernel source not extracted"; exit 1; }
 echo "linux source dir: $LINUX"
 
-echo "== [6/8] SAFE conf.c patch (append to existing 'case syncconfig:', no duplicate label) =="
+echo "== [6/8] SAFE conf.c patch (no duplicate label) + force rebuild conf binary =="
 CF="$LINUX/scripts/kconfig/conf.c"
 python3 - "$CF" <<'PYEOF'
 import sys, os
@@ -99,20 +99,33 @@ s = open(p, encoding='utf-8', errors='replace').read()
 if 'MA3063_NOSYNC' in s:
     print("conf.c already patched, skip")
     sys.exit(0)
+# Preferred anchor: first switch's 'case syncconfig:' (shared with oldconfig,
+# body is conf_read(input_file); break;). Inserting the default-set BEFORE
+# conf_read means: all symbols take Kconfig default, then .config overrides the
+# listed ones, NEW (unlisted) symbols keep their default -> no prompt.
 needle = 'case syncconfig:'
-if needle not in s:
-    print("ERROR: '%s' not found in %s" % (needle, p))
+if needle in s:
+    s = s.replace(needle,
+        'case syncconfig:\n\tconf_set_all_new_symbols(def_default); /* MA3063_NOSYNC */',
+        1)
+    print("patched conf.c via first-switch 'case syncconfig:' (default-set before conf_read)")
+elif 'conf(conf_syncconfig)' in s:
+    # Fallback: second switch's syncconfig call (after .config read).
+    s = s.replace('conf(conf_syncconfig)',
+        'conf_set_all_new_symbols(def_default);\n\tconf(conf_syncconfig)', 1)
+    print("patched conf.c via second-switch 'conf(conf_syncconfig)'")
+else:
+    print("ERROR: no known syncconfig anchor found in %s" % p)
     sys.exit(2)
-s = s.replace(needle,
-    'case syncconfig:\n\tconf_set_all_new_symbols(def_default); /* MA3063_NOSYNC */',
-    1)
 open(p, 'w').write(s)
-print("patched conf.c: syncconfig now sets all NEW symbols to default (no prompt)")
-cb = os.path.join(os.path.dirname(p), 'conf')
-if os.path.exists(cb):
-    os.remove(cb)
-    print("removed stale conf binary -> force rebuild from patched source")
 PYEOF
+rc=$?
+[ "$rc" -eq 0 ] || exit "$rc"
+# Force rebuild of the kconfig 'conf' host binary so the patched conf.c takes effect.
+# (mtime-based rebuild is unreliable across OpenWrt's prepare; remove the binary AND
+#  its object explicitly.)
+rm -f "$LINUX/scripts/kconfig/conf" "$LINUX/scripts/kconfig/conf.o" 2>/dev/null || true
+echo "removed stale conf + conf.o -> kernel Makefile will recompile from patched conf.c"
 
 echo "== [7/8] prepare pass 2: configure kernel with patched conf.c (no prompt) =="
 make target/linux/prepare V=s
