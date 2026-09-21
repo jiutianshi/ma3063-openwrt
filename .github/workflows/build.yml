@@ -105,13 +105,15 @@ jobs:
         working-directory: openwrt
         run: |
           set -euo pipefail
-          # 解包/打补丁内核（OpenWrt 内部已对内核跑 olddefconfig，不触发 NEW 符号交互）
-          make target/linux/prepare V=s
-          # 23.05 顶层不存在 kernel_olddefconfig target；直接在内核源码目录消化
-          # 5.15.150 新增的未设置符号(ARM64_EPAN 等)，避免正式编译时 syncconfig 崩溃
-          LINUX_DIR=$(find build_dir -maxdepth 5 -type d -name 'linux-5.15*' | head -1)
-          echo "LINUX_DIR=$LINUX_DIR"
-          [ -n "$LINUX_DIR" ] && make -C "$LINUX_DIR" ARCH=arm64 olddefconfig
+          # 内核 5.15.150 相对 hzyitc 的 config-5.15 新增了 ARM64_EPAN 符号；OpenWrt 在
+          # target/linux/compile 阶段会用 config 模板重新生成内核 .config，模板里未声明
+          # 该符号会导致 syncconfig 在非交互下因 NEW 符号崩溃。修复：在 config 模板里
+          # 显式声明，从源头消除 NEW（prepare/olddefconfig 会被 compile 重新生成覆盖，无效）。
+          for f in target/linux/ipq50xx/config-5.15 target/linux/ipq50xx/config-5.15.aarch64; do
+            [ -f "$f" ] || continue
+            grep -q "CONFIG_ARM64_EPAN" "$f" || echo "CONFIG_ARM64_EPAN=y" >> "$f"
+            echo "patched $f"
+          done
           make -j$(nproc) V=s 2>&1 | tee build.log
 
       - name: Upload firmware artifact (GitHub UI download)
