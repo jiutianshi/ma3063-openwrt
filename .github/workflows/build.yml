@@ -92,11 +92,10 @@ jobs:
           CONFIG_PACKAGE_wpad-basic-wolfssl=y
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-ssl=y
+          # 内核 5.15.150 新增符号(如 ARM64_EPAN)，显式置位避免被当 NEW 提示
+          CONFIG_ARM64_EPAN=y
           EOF
           make defconfig
-          # 消化内核 5.15.150 新增的未设置符号(如 ARM64_EPAN)，
-          # 避免 syncconfig 在非交互下因 NEW 符号报错
-          make kernel_olddefconfig V=s
 
       - name: Download
         working-directory: openwrt
@@ -106,7 +105,10 @@ jobs:
         working-directory: openwrt
         run: |
           set -euo pipefail
-          make -j$(nproc) V=s 2>&1 | tee build.log
+          # prepare 会解包/打补丁内核并跑 olddefconfig；之后 kernel_olddefconfig
+          # 消化 5.15.150 相对 hzyitc config-5.15 新增的未设置符号(ARM64_EPAN 等)，
+          # 避免正式编译时 syncconfig 因 NEW 符号在非交互下崩溃
+          { make target/linux/prepare V=s; make kernel_olddefconfig V=s; make -j$(nproc) V=s; } 2>&1 | tee build.log
 
       - name: Upload firmware artifact (GitHub UI download)
         if: success()
