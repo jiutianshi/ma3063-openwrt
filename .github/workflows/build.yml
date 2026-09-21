@@ -94,6 +94,9 @@ jobs:
           CONFIG_PACKAGE_luci-ssl=y
           EOF
           make defconfig
+          # 消化内核 5.15.150 新增的未设置符号(如 ARM64_EPAN)，
+          # 避免 syncconfig 在非交互下因 NEW 符号报错
+          make kernel_olddefconfig V=s
 
       - name: Download
         working-directory: openwrt
@@ -122,6 +125,8 @@ jobs:
           git config --global user.name "WorkBuddy"
           cd "$WS/ma3063-patches"
           cp "$WS/openwrt/build.log" build.log 2>/dev/null || true
+          # 精简错误日志（沙箱无法拉 22MB 完整日志，提取关键行便于快速诊断）
+          { grep -iE "error|undefined reference|No rule to make|make: \*\*\*|failed|fatal|undeclared|not found|NEW\)" "$WS/openwrt/build.log" 2>/dev/null | tail -150; echo "==== TAIL ===="; tail -n 250 "$WS/openwrt/build.log" 2>/dev/null; } > build_errors.txt 2>/dev/null || true
           mkdir -p firmware
           cp "$WS/openwrt/bin/targets/ipq50xx/aarch64/"*.ubi firmware/ 2>/dev/null || true
           cp "$WS/openwrt/bin/targets/ipq50xx/aarch64/"*sysupgrade* firmware/ 2>/dev/null || true
