@@ -132,16 +132,36 @@ jobs:
           LINUX=$(ls -d build_dir/target-aarch64_cortex-a53_musl/linux-ipq50xx_aarch64/linux-5.15.150 2>/dev/null | head -1)
           [ -n "$LINUX" ] || { echo "linux source dir not found"; exit 1; }
           echo "linux source dir: $LINUX"
-          # (c) 终极根治：把内核 kconfig 的 syncconfig 改为非交互的 olddefconfig
-          #     —— 所有 syncconfig 调用对 NEW 符号一律取默认值，不再因云端非 TTY 崩溃。
-          KM="$LINUX/scripts/kconfig/Makefile"
-          if grep -q -- '--syncconfig' "$KM"; then
-            sed -i 's/--syncconfig/--olddefconfig/g' "$KM"
-            echo "patched $KM: syncconfig -> olddefconfig"
+          # (c) 终极根治：修补解包后的内核 conf.c，让 syncconfig 对 NEW 符号非交互取默认。
+          #     关键认知：之前用 sed 把 Makefile 的 --syncconfig 改成 --olddefconfig 不生效
+          #     （崩溃栈仍是 scripts/kconfig/Makefile:77 syncconfig，说明 conf --syncconfig 仍在跑），
+          #     且 olddefconfig 不写 auto.conf 会造成反复重跑 syncconfig 的死循环。直接改 conf.c 的
+          #     syncconfig 分支最可靠——它只改变"NEW 符号如何取值"(取默认值)，不改变 syncconfig
+          #     写 include/config/auto.conf 的职责。conf 主机工具会在下一步 olddefconfig 时重编。
+          CF="$LINUX/scripts/kconfig/conf.c"
+          if [ -f "$CF" ]; then
+            python3 - "$CF" <<'PYEOF'
+import sys, os
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='replace').read()
+if 'MA3063_NOSYNC_PROMPT' in s:
+    print("conf.c already patched, skip")
+elif 'case syncconfig:' in s:
+    s = s.replace('case syncconfig:\n',
+                  'case syncconfig:\n\t\tconf_set_all_new_symbols(def_default); /* MA3063_NOSYNC_PROMPT: NEW symbols take default, no prompt */\n', 1)
+    open(p, 'w').write(s)
+    print("patched conf.c: inserted conf_set_all_new_symbols in syncconfig branch")
+    cb = os.path.join(os.path.dirname(p), 'conf')
+    if os.path.exists(cb):
+        os.remove(cb); print("removed stale conf binary -> force rebuild from patched source")
+else:
+    print("ERROR: 'case syncconfig:' not found in", p); sys.exit(2)
+PYEOF
+            rc_py=$?; [ "$rc_py" -eq 0 ] || exit "$rc_py"
           else
-            echo "WARN: --syncconfig not found in $KM (already patched or layout changed)"
+            echo "ERROR: conf.c not found at $CF"; exit 2
           fi
-          # (d) 复核：以 ARCH=arm64 跑一次 olddefconfig，确保当前 .config 无 NEW（保险）
+          # (d) 复核：以 ARCH=arm64 跑 olddefconfig，确保当前 .config 无 NEW（保险；此步会重编 patched conf）
           make -C "$LINUX" ARCH=arm64 olddefconfig
           # (e) 正式编译；yes '' 仅作额外兜底，并正确捕获 make 退出码
           set +o pipefail
