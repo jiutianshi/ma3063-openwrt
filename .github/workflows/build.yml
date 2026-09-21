@@ -105,13 +105,17 @@ jobs:
         working-directory: openwrt
         run: |
           set -euo pipefail
-          # 内核 5.15.150 相对 hzyitc 的 config-5.15 新增了若干架构符号
-          # (ARM64_EPAN / ARM64_PA_BITS_48 / QCOM_CLK_APCC_MSM8996 等)。OpenWrt 在
-          # target/linux/compile 阶段会用 config 模板重新生成内核 .config，模板里未声明的
-          # 符号会在 syncconfig/oldconfig 时被当 NEW 提示；若 stdin 是 TTY(GitHub Actions 默认)
-          # 则非交互下因无法应答而崩溃。两道防线：
-          #  1) 在 config 模板里显式声明已知缺失符号，从源头消除 NEW；
-          #  2) 用 yes '' 喂空行，让 kconfig 对仍出现的 NEW 符号一律取默认值(非交互安全)。
+          # 第8次构建：根治 syncconfig 的 NEW 符号崩溃。
+          # 5.15.150 内核相对 hzyitc 的 config-5.15 模板多出一批 NEW 符号（既有 ARM64 架构符号，
+          # 也有驱动符号如 ETM4X_IMPDEF_FEATURE、QCOM_CLK_APCC_MSM8996 等）。OpenWrt 在
+          # target/linux/compile 阶段用 syncconfig 生成 auto.conf，syncconfig 遇到 NEW 符号在
+          # 非 TTY(stdin=/dev/null) 下直接报错退出、且不读 stdin——所以"逐个补符号"和
+          # "yes '' 喂空行"都无法根治（会不断冒新的 NEW）。
+          # 根治：prepare 解包内核生成初始 .config → olddefconfig 把所有 NEW 一次性固化成
+          # 默认值 → 把这份完整的 .config 写回 config-5.15 模板，使后续 compile 的 syncconfig
+          # 再无 NEW 可报（模块注入 =y 时符号已声明，不算 NEW）。
+          #
+          # (a) 先补已知架构符号到模板，降低 prepare 阶段 oldconfig 的交互风险
           for f in target/linux/ipq50xx/config-5.15 target/linux/ipq50xx/config-5.15.aarch64; do
             [ -f "$f" ] || continue
             {
@@ -123,8 +127,17 @@ jobs:
             } >> "$f"
             echo "patched $f"
           done
-          # yes '' 提供空行应答，使任何残留 NEW 符号取默认；正确捕获 make 退出码
-          # (yes 在 make 结束后会收到 SIGPIPE，不能用 pipefail 直接判定)。
+          # (b) 解包内核并生成初始 .config（make target/linux/prepare）
+          make target/linux/prepare V=s
+          LINUX=$(ls -d build_dir/target-aarch64_cortex-a53_musl/linux-ipq50xx_aarch64/linux-5.15.150 2>/dev/null | head -1)
+          [ -n "$LINUX" ] || { echo "linux source dir not found"; exit 1; }
+          echo "linux source dir: $LINUX"
+          # (c) 固化所有 NEW 符号为默认值，从源头消除 syncconfig 的 NEW 报错
+          make -C "$LINUX" KCONFIG_CONFIG=.config olddefconfig
+          # (d) 把固化的完整 .config 写回 config 模板，compile 将基于无 NEW 的模板重新生成 .config
+          cp "$LINUX/.config" target/linux/ipq50xx/config-5.15
+          echo "config-5.15 refreshed from olddefconfig (no NEW symbols)"
+          # (e) 正式编译；yes '' 兜底任何残留交互提示，并正确捕获 make 退出码
           set +o pipefail
           yes '' | make -j$(nproc) V=s 2>&1 | tee build.log
           rc=${PIPESTATUS[1]}
