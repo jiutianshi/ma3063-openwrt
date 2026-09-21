@@ -16,14 +16,16 @@ set -euo pipefail
 PATCHES="${GITHUB_WORKSPACE:?}/ma3063-patches"
 OPENWRT="${GITHUB_WORKSPACE:?}/openwrt"
 cd "$OPENWRT"
+# 所有 make 输出都落到 build.log，便于失败时通过 build-output 分支回传诊断
+: > build.log
 
-echo "== [1/8] copy MA3063 DTS into tree =="
+echo "== [1/8] copy MA3063 DTS into tree ==" | tee -a build.log
 mkdir -p target/linux/ipq50xx/dts
 cp "$PATCHES/files/target/linux/ipq50xx/dts/ipq5018-ruijie-ma3063.dts" \
    target/linux/ipq50xx/dts/ipq5018-ruijie-ma3063.dts
 
-echo "== [2/8] register MA3063 device in image/Makefile =="
-python3 - <<'PY'
+echo "== [2/8] register MA3063 device in image/Makefile ==" | tee -a build.log
+python3 - <<'PY' 2>&1 | tee -a build.log
 p = "target/linux/ipq50xx/image/Makefile"
 s = open(p).read()
 block = '''
@@ -54,7 +56,7 @@ else:
     print("patched image/Makefile OK")
 PY
 
-echo "== [3/8] write .config and run defconfig =="
+echo "== [3/8] write .config and run defconfig ==" | tee -a build.log
 cat > .config <<'EOF'
 CONFIG_TARGET_ipq50xx=y
 CONFIG_TARGET_ipq50xx_aarch64=y
@@ -67,9 +69,9 @@ CONFIG_PACKAGE_luci=y
 CONFIG_PACKAGE_luci-ssl=y
 CONFIG_ARM64_EPAN=y
 EOF
-make defconfig
+make defconfig 2>&1 | tee -a build.log
 
-echo "== [4/8] pre-fill known arch symbols into target config template (insurance) =="
+echo "== [4/8] pre-fill known arch symbols into target config template (insurance) ==" | tee -a build.log
 for f in $(find target/linux/ipq50xx -name 'config-5.15*' 2>/dev/null); do
   {
     grep -q "CONFIG_ARM64_EPAN" "$f"        || echo "CONFIG_ARM64_EPAN=y"
@@ -78,37 +80,47 @@ for f in $(find target/linux/ipq50xx -name 'config-5.15*' 2>/dev/null); do
     grep -q "CONFIG_ARM64_4K_PAGES" "$f"    || echo "CONFIG_ARM64_4K_PAGES=y"
     grep -q "CONFIG_QCOM_CLK_APCC_MSM8996" "$f" || echo "# CONFIG_QCOM_CLK_APCC_MSM8996 is not set"
   } >> "$f"
-  echo "patched $f"
+  echo "patched $f" | tee -a build.log
 done
 
-echo "== [5/8] prepare pass 1: extract kernel (syncconfig may prompt-fail, tolerated) =="
-LINUX=$(ls -d build_dir/target-aarch64_cortex-a53_musl/linux-ipq50xx_aarch64/linux-5.15.150 2>/dev/null | head -1)
-if [ -z "$LINUX" ]; then
-  make target/linux/prepare V=s || echo "[warn] prepare pass1 non-zero (expected if syncconfig prompted before patch); will retry after patching conf.c"
-  LINUX=$(ls -d build_dir/target-aarch64_cortex-a53_musl/linux-ipq50xx_aarch64/linux-5.15.150 2>/dev/null | head -1)
-fi
-[ -n "$LINUX" ] || { echo "ERROR: kernel source not extracted"; exit 1; }
-echo "linux source dir: $LINUX"
+# 探测内核目录（用 find，避免 ls 在 set -e + pipefail 下因无匹配而炸脚本）
+detect_linux() {
+  find build_dir -maxdepth 5 -type d -name 'linux-5.15.150' 2>/dev/null | head -1
+}
 
-echo "== [6/8] SAFE conf.c patch (no duplicate label) + force rebuild conf binary =="
+echo "== [5/8] prepare pass 1: extract kernel (syncconfig prompt-fail tolerated) ==" | tee -a build.log
+LINUX="$(detect_linux)"
+if [ -z "$LINUX" ]; then
+  set +e
+  make target/linux/prepare V=s 2>&1 | tee -a build.log
+  rc1=${PIPESTATUS[0]}
+  set -e
+  echo "prepare pass1 rc=$rc1 (non-zero expected if syncconfig prompted before conf.c patch)" | tee -a build.log
+  LINUX="$(detect_linux)"
+fi
+[ -n "$LINUX" ] || { echo "ERROR: kernel source not extracted (check build.log for download/extract error)"; exit 1; }
+echo "linux source dir: $LINUX" | tee -a build.log
+
+echo "== [6/8] SAFE conf.c patch (no duplicate label) + force rebuild conf binary ==" | tee -a build.log
 CF="$LINUX/scripts/kconfig/conf.c"
-python3 - "$CF" <<'PYEOF'
+python3 - "$CF" <<'PYEOF' 2>&1 | tee -a build.log
 import sys, os
 p = sys.argv[1]
 s = open(p, encoding='utf-8', errors='replace').read()
 if 'MA3063_NOSYNC' in s:
     print("conf.c already patched, skip")
     sys.exit(0)
-# Preferred anchor: first switch's 'case syncconfig:' (shared with oldconfig,
+# Preferred anchor: main switch's 'case syncconfig:' (shared with oldconfig,
 # body is conf_read(input_file); break;). Inserting the default-set BEFORE
-# conf_read means: all symbols take Kconfig default, then .config overrides the
-# listed ones, NEW (unlisted) symbols keep their default -> no prompt.
+# conf_read means: conf_set_all_new_symbols first sets every not-yet-set symbol
+# to its Kconfig default, then conf_read(input_file) overrides the listed ones
+# from .config; unlisted NEW symbols keep their default -> no prompt.
 needle = 'case syncconfig:'
 if needle in s:
     s = s.replace(needle,
         'case syncconfig:\n\tconf_set_all_new_symbols(def_default); /* MA3063_NOSYNC */',
         1)
-    print("patched conf.c via first-switch 'case syncconfig:' (default-set before conf_read)")
+    print("patched conf.c via main-switch 'case syncconfig:' (default-set before conf_read)")
 elif 'conf(conf_syncconfig)' in s:
     # Fallback: second switch's syncconfig call (after .config read).
     s = s.replace('conf(conf_syncconfig)',
@@ -125,20 +137,12 @@ rc=$?
 # (mtime-based rebuild is unreliable across OpenWrt's prepare; remove the binary AND
 #  its object explicitly.)
 rm -f "$LINUX/scripts/kconfig/conf" "$LINUX/scripts/kconfig/conf.o" 2>/dev/null || true
-echo "removed stale conf + conf.o -> kernel Makefile will recompile from patched conf.c"
+echo "removed stale conf + conf.o -> kernel Makefile will recompile from patched conf.c" | tee -a build.log
 
-echo "== [7/8] prepare pass 2: configure kernel with patched conf.c (no prompt) =="
-make target/linux/prepare V=s
+echo "== [7/8] prepare pass 2: configure kernel with patched conf.c (no prompt) ==" | tee -a build.log
+make target/linux/prepare V=s 2>&1 | tee -a build.log
+echo "prepare pass2 OK" | tee -a build.log
 
-echo "== [8/8] build =="
-set +o pipefail
-make -j"$(nproc)" V=s 2>&1 | tee build.log
-rc=${PIPESTATUS[1]}
-set -o pipefail
-if [ "$rc" -ne 0 ]; then
-  echo "make failed rc=$rc"
-  exit "$rc"
-fi
-echo "BUILD OK"
-
-# trigger real run 1789997564
+echo "== [8/8] build ==" | tee -a build.log
+make -j"$(nproc)" V=s 2>&1 | tee -a build.log
+echo "BUILD OK" | tee -a build.log
