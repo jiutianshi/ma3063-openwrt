@@ -8,6 +8,7 @@
 // matching the mp03.5-c1 reference) with board GPIOs decoded from the stock DTB
 // (LED blue=17 red=19 green=22, reset=33, wps=18, UART rx=20 tx=21).
 // Verify LED/key GPIOs and QCN6122 board_id via TTL serial after first boot.
+// build#12: conf.c syncconfig 补丁位置已修正（落 alldefconfig 分支，conf_read 之后取默认）。
 
 /dts-v1/;
 
