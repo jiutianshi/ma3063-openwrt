@@ -4,10 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - 'files/**'
-      - 'config-ma3063.seed'
-      - '.github/workflows/build.yml'
 
 permissions:
   contents: write
@@ -16,7 +12,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout this repo (patches + dts + config)
+      - name: Checkout this repo (patches + dts + build script)
         uses: actions/checkout@v4
         with:
           path: ma3063-patches
@@ -36,154 +32,10 @@ jobs:
             gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip \
             zlib1g-dev file wget ccache
 
-      - name: Copy MA3063 DTS into tree
-        run: |
-          cp ma3063-patches/files/target/linux/ipq50xx/dts/ipq5018-ruijie-ma3063.dts \
-             openwrt/target/linux/ipq50xx/dts/ipq5018-ruijie-ma3063.dts
+      - name: Build MA3063 firmware
+        run: ./ma3063-patches/build-ma3063.sh
 
-      - name: Register MA3063 device in image/Makefile
-        # 必须插在 $(eval $(call BuildImage)) 之前，否则设备定义无效
-        run: |
-          python3 - <<'PY'
-          p = "openwrt/target/linux/ipq50xx/image/Makefile"
-          s = open(p).read()
-          block = '''
-
-          define Device/ruijie_rg-ma3063
-            $(call Device/FitImage)
-            $(call Device/UbiFit)
-            SOC := ipq5018
-            DEVICE_VENDOR := Ruijie
-            DEVICE_MODEL := RG-MA3063
-            BLOCKSIZE := 128k
-            PAGESIZE := 2048
-            DEVICE_DTS := ipq5018-ruijie-ma3063
-            DEVICE_DTS_CONFIG := config@mp03.5-c1
-            IMAGES := nand-factory.ubi sysupgrade.tar
-            IMAGE/sysupgrade.tar := sysupgrade-tar | append-metadata
-            DEVICE_PACKAGES := ath11k-firmware-ipq5018 ath11k-firmware-qcn6122 ipq-wifi-cmcc_rax3000q
-          endef
-          TARGET_DEVICES += ruijie_rg-ma3063
-          '''
-          marker = "$(eval $(call BuildImage))"
-          if marker not in s:
-              raise SystemExit("ERROR: BuildImage marker not found in image/Makefile")
-          s = s.replace(marker, block + "\n" + marker, 1)
-          open(p, "w").write(s)
-          print("patched image/Makefile OK")
-          PY
-
-      - name: Update & install feeds
-        working-directory: openwrt
-        run: |
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-
-      - name: Write .config and default
-        working-directory: openwrt
-        run: |
-          cat > .config <<'EOF'
-          CONFIG_TARGET_ipq50xx=y
-          CONFIG_TARGET_ipq50xx_aarch64=y
-          CONFIG_TARGET_ipq50xx_aarch64_DEVICE_ruijie_rg-ma3063=y
-          CONFIG_PACKAGE_ath11k-firmware-ipq5018=y
-          CONFIG_PACKAGE_ath11k-firmware-qcn6122=y
-          CONFIG_PACKAGE_ipq-wifi-cmcc_rax3000q=y
-          CONFIG_PACKAGE_wpad-basic-wolfssl=y
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-ssl=y
-          # 内核 5.15.150 新增符号(如 ARM64_EPAN)，显式置位避免被当 NEW 提示
-          CONFIG_ARM64_EPAN=y
-          EOF
-          make defconfig
-
-      - name: Download
-        working-directory: openwrt
-        run: make -j$(nproc) download
-
-      - name: Build
-        working-directory: openwrt
-        run: |
-          set -euo pipefail
-          # 根治 syncconfig 云端非交互崩溃（build#10~#11 真因）。
-          # 5.15.150 内核相对 hzyitc 的 config-5.15 模板多出一批 NEW 符号
-          # （ARM64_* 架构符号、ETM4X_IMPDEF_FEATURE、QCOM_CLK_APCC_MSM8996、以及模块
-          # =m 子选项如 ARM64_PTR_AUTH_KERNEL 等）。OpenWrt 在 target/linux 阶段用 kconfig 的
-          # syncconfig 生成 auto.conf；syncconfig 遇 NEW 符号在云端非 TTY(stdin=/dev/null) 下
-          # 直接报错退出且不读 stdin，故"逐个补符号 / yes '' / 在第一个 switch 插 conf_set_*
-          # 都只能覆盖部分、且读盘后 NEW 标志复位会不断冒新 NEW（build#10 仍崩于
-          # ETM4X_IMPDEF_FEATURE (NEW)）。
-          # 机制级根治：让 syncconfig 复用 alldefconfig 的"conf_read 之后执行
-          # conf_set_all_new_symbols(def_default)"——该调用对全部 NEW 符号取默认值、不弹提示、
-          # 且不影响 syncconfig 写 include/config/auto.conf 的职责。这才是 olddefconfig/
-          # alldefconfig 在 CI 下能非交互成功的同一机制。
-          #
-          # (a) 模板补已知架构符号（无害保险，降低 prepare 阶段交互风险）
-          for f in $(find target/linux/ipq50xx -name 'config-5.15*' 2>/dev/null); do
-            {
-              grep -q "CONFIG_ARM64_EPAN" "$f"        || echo "CONFIG_ARM64_EPAN=y"
-              grep -q "CONFIG_ARM64_PA_BITS_48" "$f"  || echo "CONFIG_ARM64_PA_BITS_48=y"
-              grep -q "CONFIG_ARM64_VA_BITS_39" "$f"  || echo "CONFIG_ARM64_VA_BITS_39=y"
-              grep -q "CONFIG_ARM64_4K_PAGES" "$f"    || echo "CONFIG_ARM64_4K_PAGES=y"
-              grep -q "CONFIG_QCOM_CLK_APCC_MSM8996" "$f" || echo "# CONFIG_QCOM_CLK_APCC_MSM8996 is not set"
-            } >> "$f"
-            echo "patched $f"
-          done
-          # (b) 解包内核并生成初始 .config（此步若命中 NEW 由下方 conf.c 补丁兜底）
-          make target/linux/prepare V=s
-          LINUX=$(ls -d build_dir/target-aarch64_cortex-a53_musl/linux-ipq50xx_aarch64/linux-5.15.150 2>/dev/null | head -1)
-          [ -n "$LINUX" ] || { echo "linux source dir not found"; exit 1; }
-          echo "linux source dir: $LINUX"
-          # (c) 机制级根治：修补解包后的内核 conf.c，让 syncconfig 对 NEW 符号非交互取默认。
-          #     关键认知：conf_set_all_new_symbols(def_default) 必须处在 conf_read(".config")
-          #     【之后】那段 switch（olddefconfig/alldefconfig 正是此处调用它）。若插在第一个
-          #     switch 的 "case syncconfig:" 开头，conf_read 尚未执行、读盘后 NEW 标志被复位，
-          #     主循环仍弹提示——旧版即因此无效。
-          #     首选锚点 "case alldefconfig:"（syncconfig 落入该分支，conf_read 之后取默认）；
-          #     兜底锚点 "conf_read(input_file);"（conf_read 之后立即取默认，模式无关）。
-          CF="$LINUX/scripts/kconfig/conf.c"
-          if [ ! -f "$CF" ]; then
-            echo "ERROR: conf.c not found at $CF"; exit 2
-          fi
-          python3 - "$CF" <<'PYEOF'
-import sys, os
-p = sys.argv[1]
-s = open(p, encoding='utf-8', errors='replace').read()
-if 'MA3063_NOSYNC' in s:
-    print("conf.c already patched, skip"); sys.exit(0)
-applied = None
-if 'case alldefconfig:' in s:
-    # syncconfig 落入 alldefconfig 分支：conf_read 之后执行 conf_set_all_new_symbols(def_default)
-    s = s.replace('case alldefconfig:', 'case syncconfig:\ncase alldefconfig:', 1)
-    applied = 'fallthrough->alldefconfig'
-elif 'conf_read(input_file);' in s:
-    # 兜底：conf_read 之后立即置默认（模式无关，对所有输入模式生效）
-    s = s.replace('conf_read(input_file);',
-                  'conf_read(input_file);\n\tconf_set_all_new_symbols(def_default); /* MA3063_NOSYNC */', 1)
-    applied = 'after-conf_read'
-else:
-    print("ERROR: cannot locate insertion point in", p); sys.exit(2)
-# 在生效的那一行补上幂等标记
-if 'MA3063_NOSYNC' not in s:
-    s = s.replace('conf_set_all_new_symbols(def_default);',
-                  'conf_set_all_new_symbols(def_default); /* MA3063_NOSYNC */', 1)
-open(p, 'w').write(s)
-print("patched conf.c via:", applied)
-cb = os.path.join(os.path.dirname(p), 'conf')
-if os.path.exists(cb):
-    os.remove(cb); print("removed stale conf binary -> force rebuild from patched source")
-PYEOF
-          rc_py=$?; [ "$rc_py" -eq 0 ] || exit "$rc_py"
-          # (d) 复核：以 ARCH=arm64 跑 olddefconfig，确保当前 .config 无 NEW（保险；此步会重编 patched conf）
-          make -C "$LINUX" ARCH=arm64 olddefconfig
-          # (e) 正式编译；正确捕获 make 退出码
-          set +o pipefail
-          make -j$(nproc) V=s 2>&1 | tee build.log
-          rc=${PIPESTATUS[1]}
-          set -o pipefail
-          if [ "$rc" -ne 0 ]; then echo "make failed rc=$rc"; exit "$rc"; fi
-
-      - name: Upload firmware artifact (GitHub UI download)
+      - name: Upload firmware artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -200,7 +52,6 @@ PYEOF
           git config --global user.name "WorkBuddy"
           cd "$WS/ma3063-patches"
           cp "$WS/openwrt/build.log" build.log 2>/dev/null || true
-          # 精简错误日志（沙箱无法拉 22MB 完整日志，提取关键行便于快速诊断）
           { grep -iE "error|undefined reference|No rule to make|make: \*\*\*|failed|fatal|undeclared|not found|NEW\)" "$WS/openwrt/build.log" 2>/dev/null | tail -150; echo "==== TAIL ===="; tail -n 250 "$WS/openwrt/build.log" 2>/dev/null; } > build_errors.txt 2>/dev/null || true
           mkdir -p firmware
           cp "$WS/openwrt/bin/targets/ipq50xx/aarch64/"*.ubi firmware/ 2>/dev/null || true
