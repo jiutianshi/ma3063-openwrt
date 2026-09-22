@@ -56,7 +56,7 @@ jobs:
           # Small diagnostics for the [9/9] ath11k step: build.log is ~30 MB and
           # cannot be fetched through the GitHub API from outside CI.
           sed -n '/^== \[9\/9\]/,$p' "$WS/openwrt/build.log" > b25_trace.txt 2>/dev/null || true
-          grep -nE "GATE |\[9\/9\]|MA3063DBG_COLDBOOT|package patch written|Applying .*(906-|0907|920-)|refusing to publish|coldboot" "$WS/openwrt/build.log" 2>/dev/null | tail -400 > b25_gates.txt || true
+          grep -nE "GATE |\[9\/9\]|\[9b\]|MA3063DBG_COLDBOOT|package patch written|Applying .*(906-|907-|0907|920-)|refusing to publish|coldboot|ATH11K_REG_TYPE_CE|ATH11K_CE_OFFSET|REG_OFFSET_MASK" "$WS/openwrt/build.log" 2>/dev/null | tail -400 > b25_gates.txt || true
           mkdir -p firmware
           cp "$WS/openwrt/bin/targets/ipq50xx/aarch64/"*.ubi firmware/ 2>/dev/null || true
           cp "$WS/openwrt/bin/targets/ipq50xx/aarch64/"*sysupgrade* firmware/ 2>/dev/null || true
