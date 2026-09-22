@@ -147,7 +147,7 @@ CF="$LINUX/scripts/kconfig/conf.c"
 python3 - "$CF" <<'PYEOF' 2>&1 | tee -a build.log
 import sys
 p = sys.argv[1]
-s = open(p, encoding='utf-8', errors='replace').read()
+s = open(p, encoding='utf-8', errors='replace', newline='').read()
 if 'MA3063_NOSYNC' in s:
     print("conf.c already patched, skip"); sys.exit(0)
 lines = s.splitlines(keepends=True)
@@ -191,7 +191,7 @@ if [ -f "$NID" ]; then
   python3 - "$NID" <<'PYEOF2' 2>&1 | tee -a build.log
 import sys
 p = sys.argv[1]
-s = open(p, encoding='utf-8', errors='replace').read()
+s = open(p, encoding='utf-8', errors='replace', newline='').read()
 if 'GD5F2GM7REYIGR' in s:
     print("nand_ids.c already has GD5F2GM7REYIGR, skip"); sys.exit(0)
 # Anchor: insert before the first LEGACY_ID_NAND line (end of the .id table's
@@ -204,7 +204,7 @@ entry = ('\t{"GD5F2GM7REYIGR SPI NAND 2G",\n'
          '\t\t{ .id = {0xc8, 0x82} },\n'
          '\t\tSZ_2K, SZ_256, SZ_128K, 0, 2, 128, NAND_ECC_INFO(8, SZ_512) },\n\n')
 s = s[:idx] + entry + s[idx:]
-open(p, 'w').write(s)
+open(p, 'w', encoding='utf-8', newline='').write(s)
 print("injected GD5F2GM7REYIGR (0xc8 0x82) into nand_ids.c")
 PYEOF2
   rc=$?
@@ -222,7 +222,7 @@ if [ -f "$QNC" ]; then
   python3 - "$QNC" <<'PYEOF3' 2>&1 | tee -a build.log
 import re, sys
 p = sys.argv[1]
-s = open(p, encoding='utf-8', errors='replace').read()
+s = open(p, encoding='utf-8', errors='replace', newline='').read()
 m = re.search(r'ipq5018_nandc_props = \{(.*?)\}', s, re.S)
 if m and '.is_qpic' in m.group(1):
     print("ipq5018_nandc_props already has .is_qpic, skip"); sys.exit(0)
@@ -240,7 +240,7 @@ for pat in (r'(ipq5018_nandc_props = \{[^}]*?\.is_bam = true,\n)',
     m = re.search(pat, s, re.S)
     if m:
         s = s[:m.end(1)] + ins + s[m.end(1):]
-        open(p, 'w').write(s)
+        open(p, 'w', encoding='utf-8', newline='').write(s)
         print("added .is_qpic = true to ipq5018_nandc_props")
         sys.exit(0)
 print("WARN: ipq5018_nandc_props anchor not found -- continuing")
@@ -260,7 +260,7 @@ if [ -f "$NBB" ]; then
   python3 - "$NBB" <<'PYEOF4' 2>&1 | tee -a build.log
 import sys
 p = sys.argv[1]
-s = open(p, encoding='utf-8', errors='replace').read()
+s = open(p, encoding='utf-8', errors='replace', newline='').read()
 if 'MA3063DBG' in s:
     print("nand_base.c already instrumented, skip"); sys.exit(0)
 # nand_detect() prints nothing when the ID lookup fails in 5.15 (the old
@@ -289,7 +289,7 @@ for a2 in ("\tfor (; type->name != NULL; type++) {\n",
         break
 if not done2:
     print("note: match-loop anchor not found -- base print only")
-open(p, 'w').write(s)
+open(p, 'w', encoding='utf-8', newline='').write(s)
 print("nand_base.c READID diagnostics inserted")
 PYEOF4
   rc=$?
@@ -324,7 +324,7 @@ if [ -f "$QNC" ]; then
   python3 - "$QNC" <<'PYEOF5' 2>&1 | tee -a build.log
 import sys
 p = sys.argv[1]
-s = open(p, encoding='utf-8', errors='replace').read()
+s = open(p, encoding='utf-8', errors='replace', newline='').read()
 if 'MA3063DBG_PARTS' in s:
     print("qcom_nandc.c already instrumented, skip"); sys.exit(0)
 
@@ -405,7 +405,7 @@ if s.count(a) == 1:
 else:
     print("WARN: child init anchor count=%d" % s.count(a))
 
-open(p, 'w').write(s)
+open(p, 'w', encoding='utf-8', newline='').write(s)
 print("qcom_nandc.c: diagnostics + fallback partition table installed")
 PYEOF5
   rc=$?
@@ -423,7 +423,7 @@ if [ -f "$MPT" ]; then
   python3 - "$MPT" <<'PYEOF6' 2>&1 | tee -a build.log
 import sys
 p = sys.argv[1]
-s = open(p, encoding='utf-8', errors='replace').read()
+s = open(p, encoding='utf-8', errors='replace', newline='').read()
 if 'MA3063DBG of_parse' in s:
     print("mtdpart.c already instrumented, skip"); sys.exit(0)
 a = '\tnp = mtd_get_of_node(master);\n\tif (mtd_is_partition(master))\n'
@@ -442,7 +442,7 @@ if s.count(a) == 1:
     print("mtd_part_of_parse(): partitions-node print inserted")
 else:
     print("WARN: partitions node anchor count=%d -- skipped" % s.count(a))
-open(p, 'w').write(s)
+open(p, 'w', encoding='utf-8', newline='').write(s)
 PYEOF6
   rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -458,7 +458,7 @@ if [ -f "$OPC" ]; then
   python3 - "$OPC" <<'PYEOF7' 2>&1 | tee -a build.log
 import sys
 p = sys.argv[1]
-s = open(p, encoding='utf-8', errors='replace').read()
+s = open(p, encoding='utf-8', errors='replace', newline='').read()
 if 'MA3063DBG fixed_parse' in s:
     print("ofpart_core.c already instrumented, skip"); sys.exit(0)
 # parse_fixed_partitions() only -- parse_ofoldpart_partitions() uses `dp`.
@@ -477,7 +477,7 @@ if s.count(a) == 1:
     print("parse_fixed_partitions(): nr_parts print inserted")
 else:
     print("WARN: nr_parts anchor count=%d -- skipped" % s.count(a))
-open(p, 'w').write(s)
+open(p, 'w', encoding='utf-8', newline='').write(s)
 PYEOF7
   rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -500,7 +500,7 @@ if [ -f "$UBI" ]; then
   python3 - "$UBI" <<'PYEOF8' 2>&1 | tee -a build.log
 import sys
 p = sys.argv[1]
-s = open(p, encoding='utf-8', errors='replace').read()
+s = open(p, encoding='utf-8', errors='replace', newline='').read()
 if 'MA3063DBG ubi_init' in s:
     print("ubi/build.c already instrumented, skip"); sys.exit(0)
 
@@ -571,7 +571,7 @@ elif s.count(a) == 1:
 else:
     print("WARN: no known ubi_init initcall anchor -- level unchanged")
 
-open(p, 'w').write(s)
+open(p, 'w', encoding='utf-8', newline='').write(s)
 PYEOF8
   rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -580,6 +580,112 @@ PYEOF8
   fi
 else
   echo "WARN: ubi/build.c not found at $UBI -- continuing" | tee -a build.log
+fi
+
+log "[6h/8] ofpart: tolerate an empty 'partitions' container"
+# 根因（Build#23 运行日志已证实）：
+#   RG-MA3063 的 OEM u-boot 在启动时把 DTB 里 nandcs@0/partitions 的 20 个子节点
+#   全部搬到了 nandcs@0 之下（partition@N 直挂 flash 节点，且 label/reg 都还在），
+#   但那个空的 'partitions' 容器被留了下来（仍带 compatible="fixed-partitions"）。
+#   parse_fixed_partitions() 一旦发现容器存在就只遍历容器（dedicated=true），
+#   于是数出 0 个分区并 return 0；更糟的是这同时堵死了内核本来就支持的
+#   「直接子节点」legacy 路径（mtdpart.c 里 backward-compat 注释正是指它）。
+#   结果：ofpart 失灵 -> 只能靠 qcom_nandc.c 里的驱动内建兜底表建分区。
+# 修法：容器存在但为空时，回退到遍历 flash 节点的直接子节点（跳过带 compatible
+#   的空容器本身）。该条件只在这种畸形树上成立，容器非空的正常设备零影响。
+OPC2="$LINUX/drivers/mtd/parsers/ofpart_core.c"
+if [ -f "$OPC2" ]; then
+  python3 - "$OPC2" <<'PYEOF9' 2>&1 | tee -a build.log
+import sys
+p = sys.argv[1]
+# newline='' keeps the patch byte-faithful on every host: with the default
+# text mode, Python rewrites every '\n' as os.linesep ('\r\n' on Windows),
+# which would silently convert the whole source file.
+s = open(p, encoding='utf-8', errors='replace', newline='').read()
+if 'MA3063DBG empty' in s:
+    print("ofpart_core.c: empty-container fallback already present, skip"); sys.exit(0)
+a = ('\t\t\tofpart_node = mtd_node;\n'
+     '\t\t\tdedicated = false;\n'
+     '\t\t}\n'
+     '\t} else { /* Partition */\n')
+b = ('\t\t\tofpart_node = mtd_node;\n'
+     '\t\t\tdedicated = false;\n'
+     '\t\t} else if (of_get_child_count(ofpart_node) == 0) {\n'
+     '\t\t\t/*\n'
+     '\t\t\t * MA3063DBG empty: the \'partitions\' container exists but has no\n'
+     '\t\t\t * children. The RG-MA3063 OEM u-boot promotes the partition nodes\n'
+     '\t\t\t * to direct subnodes of the flash node while leaving the empty\n'
+     '\t\t\t * (compatible="fixed-partitions") container behind. Honouring\n'
+     '\t\t\t * that empty container hides the real partitions, so fall back\n'
+     '\t\t\t * to the direct subnodes -- the legacy layout that the code\n'
+     '\t\t\t * below already understands.\n'
+     '\t\t\t */\n'
+     '\t\t\tpr_info("%s: empty \'partitions\' subnode on %pOF, parsing direct subnodes\\n",\n'
+     '\t\t\t\tmaster->name, mtd_node);\n'
+     '\t\t\tofpart_node = mtd_node;\n'
+     '\t\t\tdedicated = false;\n'
+     '\t\t}\n'
+     '\t} else { /* Partition */\n')
+if s.count(a) == 1:
+    s = s.replace(a, b, 1)
+    print("parse_fixed_partitions(): empty-container fallback inserted")
+else:
+    print("WARN: ofpart fallback anchor count=%d -- skipped" % s.count(a))
+open(p, 'w', encoding='utf-8', newline='').write(s)
+PYEOF9
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "ofpart_core.c fallback FAILED rc=$rc" | tee -a build.log
+    exit "$rc"
+  fi
+else
+  echo "WARN: ofpart_core.c not found at $OPC2 -- continuing" | tee -a build.log
+fi
+
+log "[6i/8] ath11k caldata extraction for ruijie,rg-ma3063"
+# Build#23 启动日志：
+#   ath11k c000000.wifi: qmi failed to load CAL data file:caldata.bin
+#   ath11k c000000.wifi: failed to load board data file: -12
+#   ath11k soc:wifi1@c000000: qmi failed to load CAL data file:caldata_1.bin
+# 原因：hzyitc 的 11-ath11k-caldata 里两个 case 只列了
+#   cmcc,rax3000q / redmi,ax3000 / xiaomi,cr881x，
+#   没有 ruijie,rg-ma3063，所以 /lib/firmware/ath11k/*/caldata*.bin 永远不生成。
+# 偏移取自本机 0:ART 实测（Build#23 串口 hexdump）：
+#   0x1000  -> 01 00 04 04 ... 4c 7e 18 04   IPQ5018 2.4G 校准数据
+#   0x26800 -> 01 00 04 04 ... f7 1d 18 04   QCN6122 5G  校准数据
+#   两者与 AX3000 / RAX3000Q 同布局，故沿用同一组偏移。
+CAL="target/linux/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata"
+if [ -f "$CAL" ]; then
+  python3 - "$CAL" <<'PYEOF10' 2>&1 | tee -a build.log
+import sys
+p = sys.argv[1]
+# newline='' -- see the note in [6h/8]: never let Python rewrite line endings.
+s = open(p, encoding='utf-8', errors='replace', newline='').read()
+if 'ruijie,rg-ma3063' in s:
+    print("11-ath11k-caldata already patched, skip"); sys.exit(0)
+cr = '\r' if '\r\n' in s else ''
+n = 0
+out = []
+for ln in s.split('\n'):
+    if ln.rstrip('\r').strip() == 'xiaomi,cr881x)':
+        indent = ln[:len(ln) - len(ln.lstrip())]
+        out.append(indent + 'ruijie,rg-ma3063|\\' + cr)
+        n += 1
+    out.append(ln)
+if n:
+    s = '\n'.join(out)
+    print("11-ath11k-caldata: ruijie,rg-ma3063 added to %d case block(s)" % n)
+else:
+    print("WARN: ath11k caldata anchor 'xiaomi,cr881x)' not found -- patch skipped")
+open(p, 'w', encoding='utf-8', newline='').write(s)
+PYEOF10
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "11-ath11k-caldata patch FAILED rc=$rc" | tee -a build.log
+    exit "$rc"
+  fi
+else
+  echo "WARN: 11-ath11k-caldata not found -- continuing" | tee -a build.log
 fi
 
 log "[7/8] prepare pass 2: configure kernel with patched conf.c (no prompt)"
