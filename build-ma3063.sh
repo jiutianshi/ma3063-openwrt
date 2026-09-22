@@ -89,6 +89,23 @@ echo "defconfig rc=$?" | tee -a build.log
 
 log "[4/8] pre-fill known arch symbols into target config template (insurance)"
 for f in $(find target/linux/ipq50xx -name 'config-5.15*' 2>/dev/null); do
+  # MA3063: the OEM u-boot only passes "ubi.mtd=rootfs" and no mtdparts=, so the
+  # DTS fixed-partitions table is the only source of a partition named "rootfs".
+  # The ipq50xx target leaves CONFIG_MTD_OF_PARTS unset, which means the
+  # ofpart parser never runs and the DTS partitions are silently ignored.
+  # Defensive only: target/linux/generic/config-5.15 already sets
+  # CONFIG_MTD_OF_PARTS=y (verified), so the fixed-partitions parser is present
+  # and the DTS table under nandcs@0 is parsed. Keep this guard so a future
+  # generic-config change cannot silently kill the rootfs partition again.
+  if grep -q '^# CONFIG_MTD_OF_PARTS is not set' "$f"; then
+    sed -i 's/^# CONFIG_MTD_OF_PARTS is not set/CONFIG_MTD_OF_PARTS=y/' "$f"
+    echo "  MTD_OF_PARTS: flipped to =y in $f" | tee -a build.log
+  elif grep -q '^CONFIG_MTD_OF_PARTS=y' "$f"; then
+    echo "  MTD_OF_PARTS: already =y in $f" | tee -a build.log
+  else
+    echo "CONFIG_MTD_OF_PARTS=y" >> "$f"
+    echo "  MTD_OF_PARTS: appended =y to $f" | tee -a build.log
+  fi
   {
     grep -q "CONFIG_ARM64_EPAN" "$f"        || echo "CONFIG_ARM64_EPAN=y"
     grep -q "CONFIG_ARM64_PA_BITS_48" "$f"  || echo "CONFIG_ARM64_PA_BITS_48=y"
@@ -185,6 +202,91 @@ PYEOF2
   fi
 else
   echo "WARN: nand_ids.c not found at $NID (kernel layout changed?) -- continuing" | tee -a build.log
+fi
+
+log "[6c/8] fix ipq5018_nandc_props: add missing .is_qpic = true"
+QNC="$LINUX/drivers/mtd/nand/raw/qcom_nandc.c"
+if [ -f "$QNC" ]; then
+  python3 - "$QNC" <<'PYEOF3' 2>&1 | tee -a build.log
+import re, sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='replace').read()
+m = re.search(r'ipq5018_nandc_props = \{(.*?)\}', s, re.S)
+if m and '.is_qpic' in m.group(1):
+    print("ipq5018_nandc_props already has .is_qpic, skip"); sys.exit(0)
+# Upstream patch 403 defines ipq5018_nandc_props without .is_qpic = true
+# (ipq4019/ipq8074/sdx55 all have it). qcom_nandc_setup() then runs:
+#   if (!nandc->props->is_qpic) nandc_write(nandc, SFLASHC_BURST_CFG, 0);
+# zeroing the QPIC serial-flash burst config on IPQ5018, which breaks access to
+# the SPI-NAND (the OEM u-boot still reads the same chip fine).
+ins = '\t.is_qpic = true,\n'
+# Preferred anchor: right after ".is_bam = true," inside ipq5018_nandc_props
+# (matches patch 403's layout). Fallback: right after the opening brace, so we
+# still work if upstream ever joins the fields onto one line.
+for pat in (r'(ipq5018_nandc_props = \{[^}]*?\.is_bam = true,\n)',
+            r'(ipq5018_nandc_props = \{\n)'):
+    m = re.search(pat, s, re.S)
+    if m:
+        s = s[:m.end(1)] + ins + s[m.end(1):]
+        open(p, 'w').write(s)
+        print("added .is_qpic = true to ipq5018_nandc_props")
+        sys.exit(0)
+print("WARN: ipq5018_nandc_props anchor not found -- continuing")
+PYEOF3
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "qcom_nandc.c is_qpic fix FAILED rc=$rc" | tee -a build.log
+    exit "$rc"
+  fi
+else
+  echo "WARN: qcom_nandc.c not found at $QNC -- continuing" | tee -a build.log
+fi
+
+log "[6d/8] add temporary READID diagnostics to nand_base.c"
+NBB="$LINUX/drivers/mtd/nand/raw/nand_base.c"
+if [ -f "$NBB" ]; then
+  python3 - "$NBB" <<'PYEOF4' 2>&1 | tee -a build.log
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='replace').read()
+if 'MA3063DBG' in s:
+    print("nand_base.c already instrumented, skip"); sys.exit(0)
+# nand_detect() prints nothing when the ID lookup fails in 5.15 (the old
+# "device found, Manufacturer ID:" line only runs on the success path), so a
+# failed detection is completely silent. Print the raw bytes we actually read
+# from the chip so the next serial log is conclusive.
+a1 = "\tchip->id.len = nand_id_len(id_data, ARRAY_SIZE(chip->id.data));\n"
+if s.count(a1) != 1:
+    print("WARN: nand_id_len anchor count=%d -- diagnostics skipped" % s.count(a1)); sys.exit(0)
+# Print the bytes explicitly (no %phN hexdump -- avoids any printk format risk
+# and reads better in a serial log).
+s = s.replace(a1, a1 + (
+    '\tpr_info("MA3063DBG readid maf=0x%02x dev=0x%02x idlen=%d b=%02x%02x%02x%02x\\n",\n'
+    '\t\tmaf_id, dev_id, chip->id.len,\n'
+    '\t\tid_data[0], id_data[1], id_data[2], id_data[3]);\n'), 1)
+# NOTE: in v5.15 this line ends with " {" (brace on the same line, single
+# occurrence). Keep the unbraced form as a fallback for other tree revisions.
+ins2 = '\tpr_info("MA3063DBG match loop dev_id=0x%02x\\n", dev_id);\n'
+done2 = False
+for a2 in ("\tfor (; type->name != NULL; type++) {\n",
+           "\tfor (; type->name != NULL; type++)\n"):
+    if s.count(a2) == 1:
+        s = s.replace(a2, ins2 + a2, 1)
+        print("match-loop print inserted")
+        done2 = True
+        break
+if not done2:
+    print("note: match-loop anchor not found -- base print only")
+open(p, 'w').write(s)
+print("nand_base.c READID diagnostics inserted")
+PYEOF4
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "nand_base.c diagnostics FAILED rc=$rc" | tee -a build.log
+    exit "$rc"
+  fi
+else
+  echo "WARN: nand_base.c not found at $NBB -- continuing" | tee -a build.log
 fi
 
 log "[7/8] prepare pass 2: configure kernel with patched conf.c (no prompt)"
