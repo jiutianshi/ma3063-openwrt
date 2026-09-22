@@ -73,9 +73,19 @@ def strip_ce_offset(text):
     return text, n
 
 
+# NOTE: upstream's patch is written against a 6.x kernel and uses
+#   #define ATH11K_REG_TYPE(x) FIELD_PREP_CONST(ATH11K_REG_TYPE_MASK, x)
+# FIELD_PREP_CONST() only appeared in v6.6.  This tree is backports-6.1.24 on
+# top of a 5.15.150 kernel, so that macro does not exist (build error:
+# "implicit declaration of function 'FIELD_PREP_CONST'").  FIELD_PREP() cannot
+# be used either: it expands to a GCC statement expression, which is not a
+# constant expression and therefore illegal in the `static const struct
+# ath11k_hw_regs` initialisers ("initializer element is not constant").
+# A plain shift is the equivalent constant expression:
+#   FIELD_PREP_CONST(GENMASK(31, 28), x) == ((x << 28) & GENMASK(31, 28))
 REG_MACROS = """\
 #define ATH11K_REG_TYPE_MASK GENMASK(31, 28)
-#define ATH11K_REG_TYPE(x) FIELD_PREP_CONST(ATH11K_REG_TYPE_MASK, x)
+#define ATH11K_REG_TYPE(x) (((x) << 28) & ATH11K_REG_TYPE_MASK)
 #define ATH11K_REG_TYPE_NORMAL ATH11K_REG_TYPE(0)
 #define ATH11K_REG_TYPE_DP ATH11K_REG_TYPE(1)
 #define ATH11K_REG_TYPE_CE ATH11K_REG_TYPE(2)
@@ -84,9 +94,9 @@ REG_MACROS = """\
 READ_BODY = """
 \tswitch (offset & ATH11K_REG_TYPE_MASK) {
 \tcase ATH11K_REG_TYPE_NORMAL:
-\t\treturn ioread32(ab->mem + FIELD_GET(ATH11K_REG_OFFSET_MASK, offset));
+\t\treturn ioread32(ab->mem + (offset & ATH11K_REG_OFFSET_MASK));
 \tcase ATH11K_REG_TYPE_CE:
-\t\treturn ioread32(ab->mem_ce + FIELD_GET(ATH11K_REG_OFFSET_MASK, offset));
+\t\treturn ioread32(ab->mem_ce + (offset & ATH11K_REG_OFFSET_MASK));
 \tdefault:
 \t\tBUG();
 \t\treturn 0;
@@ -97,10 +107,10 @@ READ_BODY = """
 WRITE_BODY = """
 \tswitch (offset & ATH11K_REG_TYPE_MASK) {
 \tcase ATH11K_REG_TYPE_NORMAL:
-\t\tiowrite32(value, ab->mem + FIELD_GET(ATH11K_REG_OFFSET_MASK, offset));
+\t\tiowrite32(value, ab->mem + (offset & ATH11K_REG_OFFSET_MASK));
 \t\tbreak;
 \tcase ATH11K_REG_TYPE_CE:
-\t\tiowrite32(value, ab->mem_ce + FIELD_GET(ATH11K_REG_OFFSET_MASK, offset));
+\t\tiowrite32(value, ab->mem_ce + (offset & ATH11K_REG_OFFSET_MASK));
 \t\tbreak;
 \tdefault:
 \t\tBUG();
