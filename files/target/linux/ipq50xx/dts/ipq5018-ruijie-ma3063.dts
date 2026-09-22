@@ -607,6 +607,15 @@
 	};
 };
 
+// Build#25: ath11k coldboot calibration is disabled for IPQ5018/QCN6122 in
+// build-ma3063.sh (".coldboot_cal_mm/.coldboot_cal_ftm = false"), and upstream
+// openwrt PR #19083 pairs that with fw-memory-mode = <1> on every IPQ5018
+// board.  Mode <2> (extended) makes the firmware request a CALDB chunk that the
+// host has to back with the fixed physical address 0x4A400000
+// (ATH11K_QMI_CALDB_ADDRESS); that address is reserved as no-map in
+// reserved-memory below, so any host-side touch of it page-faults -- which is
+// exactly the Build#24 panic.  Mode <1> uses the normal dma_alloc_coherent()
+// path instead.
 &wifi0 {
 	// IPQ5018
 	qcom,multipd_arch;
@@ -615,7 +624,7 @@
 
 	qcom,board_id = <0x24>;
 
-	qcom,ath11k-fw-memory-mode = <2>;
+	qcom,ath11k-fw-memory-mode = <1>;
 	qcom,bdf-addr = <0x4c400000>;
 
 	status = "ok";
@@ -629,7 +638,7 @@
 
 	qcom,board_id = <0x60>;
 
-	qcom,ath11k-fw-memory-mode = <2>;
+	qcom,ath11k-fw-memory-mode = <1>;
 	qcom,bdf-addr = <0x4d100000>;
 	qcom,m3-dump-addr = <0x4df00000>;
 

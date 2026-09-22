@@ -34,12 +34,12 @@ detect_linux() {
   find build_dir -type d -name 'linux-5.15.150' 2>/dev/null | head -1
 }
 
-log "[1/8] copy MA3063 DTS into tree"
+log "[1/9] copy MA3063 DTS into tree"
 mkdir -p target/linux/ipq50xx/dts
 cp "$PATCHES/files/target/linux/ipq50xx/dts/ipq5018-ruijie-ma3063.dts" \
    target/linux/ipq50xx/dts/ipq5018-ruijie-ma3063.dts
 
-log "[2/8] register MA3063 device in image/Makefile"
+log "[2/9] register MA3063 device in image/Makefile"
 python3 - <<'PY' 2>&1 | tee -a build.log
 p = "target/linux/ipq50xx/image/Makefile"
 s = open(p).read()
@@ -71,7 +71,7 @@ else:
     print("patched image/Makefile OK")
 PY
 
-log "[3/8] write .config and run defconfig"
+log "[3/9] write .config and run defconfig"
 cat > .config <<'EOF'
 CONFIG_TARGET_ipq50xx=y
 CONFIG_TARGET_ipq50xx_aarch64=y
@@ -87,7 +87,7 @@ EOF
 make defconfig >> build.log 2>&1
 echo "defconfig rc=$?" | tee -a build.log
 
-log "[4/8] pre-fill known arch symbols into target config template (insurance)"
+log "[4/9] pre-fill known arch symbols into target config template (insurance)"
 for f in $(find target/linux/ipq50xx -name 'config-5.15*' 2>/dev/null); do
   # MA3063: the OEM u-boot only passes "ubi.mtd=rootfs" and no mtdparts=, so the
   # DTS fixed-partitions table is the only source of a partition named "rootfs".
@@ -128,7 +128,7 @@ for f in $(find target/linux/ipq50xx -name 'config-5.15*' 2>/dev/null); do
   echo "patched $f" | tee -a build.log
 done
 
-log "[5/8] prepare pass 1: extract kernel (syncconfig prompt-fail tolerated)"
+log "[5/9] prepare pass 1: extract kernel (syncconfig prompt-fail tolerated)"
 LINUX="$(detect_linux)"
 if [ -z "$LINUX" ]; then
   make target/linux/prepare V=s >> build.log 2>&1
@@ -142,7 +142,7 @@ if [ -z "$LINUX" ]; then
 fi
 echo "linux source dir: $LINUX" | tee -a build.log
 
-log "[6/8] SAFE conf.c patch (correct anchor) + force rebuild conf binary"
+log "[6/9] SAFE conf.c patch (correct anchor) + force rebuild conf binary"
 CF="$LINUX/scripts/kconfig/conf.c"
 python3 - "$CF" <<'PYEOF' 2>&1 | tee -a build.log
 import sys
@@ -185,7 +185,7 @@ fi
 rm -f "$LINUX/scripts/kconfig/conf" "$LINUX/scripts/kconfig/conf.o" 2>/dev/null
 echo "removed stale conf + conf.o -> kernel Makefile recompiles from patched conf.c" | tee -a build.log
 
-log "[6b/8] inject GD5F2GM7REYIGR SPI-NAND into nand_ids.c"
+log "[6b/9] inject GD5F2GM7REYIGR SPI-NAND into nand_ids.c"
 NID="$LINUX/drivers/mtd/nand/raw/nand_ids.c"
 if [ -f "$NID" ]; then
   python3 - "$NID" <<'PYEOF2' 2>&1 | tee -a build.log
@@ -216,7 +216,7 @@ else
   echo "WARN: nand_ids.c not found at $NID (kernel layout changed?) -- continuing" | tee -a build.log
 fi
 
-log "[6c/8] fix ipq5018_nandc_props: add missing .is_qpic = true"
+log "[6c/9] fix ipq5018_nandc_props: add missing .is_qpic = true"
 QNC="$LINUX/drivers/mtd/nand/raw/qcom_nandc.c"
 if [ -f "$QNC" ]; then
   python3 - "$QNC" <<'PYEOF3' 2>&1 | tee -a build.log
@@ -254,7 +254,7 @@ else
   echo "WARN: qcom_nandc.c not found at $QNC -- continuing" | tee -a build.log
 fi
 
-log "[6d/8] add temporary READID diagnostics to nand_base.c"
+log "[6d/9] add temporary READID diagnostics to nand_base.c"
 NBB="$LINUX/drivers/mtd/nand/raw/nand_base.c"
 if [ -f "$NBB" ]; then
   python3 - "$NBB" <<'PYEOF4' 2>&1 | tee -a build.log
@@ -301,7 +301,7 @@ else
   echo "WARN: nand_base.c not found at $NBB -- continuing" | tee -a build.log
 fi
 
-log "[6e/8] MTD partition pipeline diagnostics + driver-provided partition fallback"
+log "[6e/9] MTD partition pipeline diagnostics + driver-provided partition fallback"
 # Build#21 result: the SPI-NAND chip is now detected correctly, but the kernel
 # never registers any MTD partition (no "N partitions found" / "Creating N MTD
 # partitions" lines at all) so UBI fails with "cannot open mtd rootfs, error -2".
@@ -417,7 +417,7 @@ else
   echo "WARN: qcom_nandc.c not found at $QNC -- continuing" | tee -a build.log
 fi
 
-log "[6f/8] MTD parser diagnostics (mtdpart.c + ofpart_core.c)"
+log "[6f/9] MTD parser diagnostics (mtdpart.c + ofpart_core.c)"
 MPT="$LINUX/drivers/mtd/mtdpart.c"
 if [ -f "$MPT" ]; then
   python3 - "$MPT" <<'PYEOF6' 2>&1 | tee -a build.log
@@ -488,7 +488,7 @@ else
   echo "WARN: ofpart_core.c not found at $OPC -- continuing" | tee -a build.log
 fi
 
-log "[6g/8] UBI attach diagnostics + late-init deferral"
+log "[6g/9] UBI attach diagnostics + late-init deferral"
 # If ubi_init() runs before the NAND driver has registered its partitions, the
 # named attach ("ubi.mtd=rootfs") fails once with ENOENT and is never retried
 # (built-in UBI just `continue`s). The dump tells us whether "rootfs" was
@@ -582,7 +582,7 @@ else
   echo "WARN: ubi/build.c not found at $UBI -- continuing" | tee -a build.log
 fi
 
-log "[6h/8] ofpart: tolerate an empty 'partitions' container"
+log "[6h/9] ofpart: tolerate an empty 'partitions' container"
 # 根因（Build#23 运行日志已证实）：
 #   RG-MA3063 的 OEM u-boot 在启动时把 DTB 里 nandcs@0/partitions 的 20 个子节点
 #   全部搬到了 nandcs@0 之下（partition@N 直挂 flash 节点，且 label/reg 都还在），
@@ -642,7 +642,7 @@ else
   echo "WARN: ofpart_core.c not found at $OPC2 -- continuing" | tee -a build.log
 fi
 
-log "[6i/8] ath11k caldata extraction for ruijie,rg-ma3063"
+log "[6i/9] ath11k caldata extraction for ruijie,rg-ma3063"
 # Build#23 启动日志：
 #   ath11k c000000.wifi: qmi failed to load CAL data file:caldata.bin
 #   ath11k c000000.wifi: failed to load board data file: -12
@@ -659,7 +659,7 @@ if [ -f "$CAL" ]; then
   python3 - "$CAL" <<'PYEOF10' 2>&1 | tee -a build.log
 import sys
 p = sys.argv[1]
-# newline='' -- see the note in [6h/8]: never let Python rewrite line endings.
+# newline='' -- see the note in [6h/9]: never let Python rewrite line endings.
 s = open(p, encoding='utf-8', errors='replace', newline='').read()
 if 'ruijie,rg-ma3063' in s:
     print("11-ath11k-caldata already patched, skip"); sys.exit(0)
@@ -688,7 +688,7 @@ else
   echo "WARN: 11-ath11k-caldata not found -- continuing" | tee -a build.log
 fi
 
-log "[7/8] prepare pass 2: configure kernel with patched conf.c (no prompt)"
+log "[7/9] prepare pass 2: configure kernel with patched conf.c (no prompt)"
 make target/linux/prepare V=s >> build.log 2>&1
 rc2=$?
 echo "prepare pass2 rc=$rc2" | tee -a build.log
@@ -697,12 +697,136 @@ if [ "$rc2" -ne 0 ]; then
   exit 1
 fi
 
-log "[8/8] build"
+log "[8/9] build (pass 1)"
 make -j"$(nproc)" V=s >> build.log 2>&1
 rc3=$?
-echo "build rc=$rc3" | tee -a build.log
+echo "build pass1 rc=$rc3" | tee -a build.log
 if [ "$rc3" -ne 0 ]; then
   echo "ERROR: build failed -- see build.log" | tee -a build.log
   exit 1
 fi
+echo "BUILD OK (pass 1)" | tee -a build.log
+
+# Baseline for the Build#25 fix: the image produced by the unpatched ath11k.
+IMG1="$(find bin/targets/ipq50xx -name '*nand-factory.ubi' 2>/dev/null | head -1)"
+[ -n "$IMG1" ] || IMG1="$(find bin/targets/ipq50xx -name '*.ubi' 2>/dev/null | head -1)"
+HASH1="$(sha256sum "$IMG1" 2>/dev/null | cut -d' ' -f1)"
+echo "pass1 image: $IMG1 sha256=$HASH1" | tee -a build.log
+
+log "[9/9] ath11k: disable coldboot calibration for IPQ5018/QCN6122 + rebuild"
+# ---------------------------------------------------------------------------
+# Build#24 boot result (serial log):
+#   [19.222283] Unable to handle kernel paging request at virtual address
+#               ffffffc10a400000
+#   [19.450108]  ath11k_ce_get_attr_flags+0xb8/0x290 [ath11k]
+#   [19.455663]  ath11k_ce_init_pipes+0x48/0x190 [ath11k]
+#   [19.460699]  ath11k_core_qmi_firmware_ready+0x38/0x56c [ath11k]
+#   [19.466429]  ath11k_qmi_deinit_service+0x1454/0x1ae0 [ath11k]
+#   Kernel panic - not syncing: Oops: Fatal exception  ->  Reboot loop
+#
+# 0xffffffc10a400000 is a linear-map alias.  With VA_BITS=39 the linear map
+# starts at 0xffffffc000000000 + <KASLR shift>, so the address maps to physical
+# 0x4A400000 == ATH11K_QMI_CALDB_ADDRESS.  That constant is referenced in
+# ath11k in exactly one place: the coldboot-calibration branch of
+# ath11k_qmi_assign_target_mem_chunk().  Our DTS reserves 0x4A400000 as
+# tz_apps/no-map, i.e. it is deliberately absent from the linear map, so any
+# host-side touch of it faults.
+#
+# Upstream (openwrt PR #19083, 2025-06) hit the same "firmware crashes during
+# wifi startup" failure on IPQ5018 and fixed it by setting
+# .coldboot_cal_mm/.coldboot_cal_ftm = false for IPQ5018 and QCN6122 (plus
+# fw-memory-mode 2 -> 1 in the board DTS, which we already did in
+# files/.../ipq5018-ruijie-ma3063.dts).  The hzyitc 23.05 tree predates that
+# fix: patch 0019 (IPQ5018) and patch 301 (QCN6122) leave both fields true.
+#
+# The mac80211/backports source only exists after a build, so the injection
+# happens here, after pass 1, and is followed by a forced package rebuild plus
+# three gates that make a silent no-op impossible.
+# ---------------------------------------------------------------------------
+BP="$(find build_dir -maxdepth 3 -type d -name 'backports-*' 2>/dev/null | head -1)"
+if [ -z "$BP" ]; then
+  echo "ERROR: backports source dir not found under build_dir" | tee -a build.log
+  exit 1
+fi
+echo "backports source dir: $BP" | tee -a build.log
+CORE="$BP/drivers/net/wireless/ath/ath11k/core.c"
+if [ ! -f "$CORE" ]; then
+  echo "ERROR: $CORE not found" | tee -a build.log
+  exit 1
+fi
+KO_COUNT_BEFORE="$(find "$BP" -name 'ath11k.ko' | wc -l)"
+KO_BEFORE="$(find "$BP" -name 'ath11k.ko' | head -1)"
+HASH_KO_BEFORE=""
+if [ -n "$KO_BEFORE" ]; then
+  HASH_KO_BEFORE="$(sha256sum "$KO_BEFORE" | cut -d' ' -f1)"
+fi
+echo "pass1 ath11k.ko: ${KO_BEFORE:-<none>} sha256=${HASH_KO_BEFORE:-<none>}" | tee -a build.log
+
+python3 "$PATCHES/ma3063-ath11k-coldboot.py" "$CORE" 2>&1 | tee -a build.log
+rcfix=${PIPESTATUS[0]}
+if [ "$rcfix" -ne 0 ]; then
+  echo "ERROR: ath11k coldboot-calibration patch FAILED rc=$rcfix" | tee -a build.log
+  exit "$rcfix"
+fi
+
+# Force the mac80211 package to recompile: drop only its .built* stamps (the
+# .prepared* stamps must survive, otherwise OpenWrt re-extracts the tarball and
+# wipes the injection) plus the ath11k objects.
+find "$BP" -maxdepth 1 -name '.built*' -delete 2>/dev/null || true
+rm -f "$BP"/drivers/net/wireless/ath/ath11k/*.o \
+      "$BP"/drivers/net/wireless/ath/ath11k/*.ko 2>/dev/null || true
+echo "dropped mac80211 .built stamps + ath11k objects -> kbuild must relink ath11k.ko" | tee -a build.log
+
+make -j"$(nproc)" V=s >> build.log 2>&1
+rc4=$?
+echo "build pass2 rc=$rc4" | tee -a build.log
+
+MARKER="MA3063DBG_COLDBOOT"
+GATE_FAIL=0
+
+if grep -q "$MARKER" "$CORE"; then
+  echo "GATE 1 OK: $MARKER present in ath11k/core.c" | tee -a build.log
+else
+  echo "GATE 1 FAIL: $MARKER missing from ath11k/core.c" | tee -a build.log
+  GATE_FAIL=1
+fi
+
+KO="$(find "$BP" -name 'ath11k.ko' | head -1)"
+if [ -n "$KO" ] && grep -q "$MARKER" "$KO"; then
+  echo "GATE 2 OK: $MARKER present in $(basename "$KO") (ko_count=$KO_COUNT_BEFORE)" | tee -a build.log
+elif [ -z "$KO" ] && grep -q "$MARKER" "$BP/drivers/net/wireless/ath/ath11k/core.o"; then
+  echo "GATE 2 OK: $MARKER present in core.o (no ath11k.ko -- built-in config?)" | tee -a build.log
+else
+  echo "GATE 2 FAIL: rebuilt ath11k module does not carry $MARKER -- it was not recompiled" | tee -a build.log
+  GATE_FAIL=1
+fi
+
+HASH_KO_AFTER=""
+if [ -n "$KO" ]; then
+  HASH_KO_AFTER="$(sha256sum "$KO" | cut -d' ' -f1)"
+fi
+echo "pass2 ath11k.ko: ${KO:-<none>} sha256=${HASH_KO_AFTER:-<none>}" | tee -a build.log
+if [ -n "$HASH_KO_BEFORE" ] && [ "$HASH_KO_BEFORE" = "$HASH_KO_AFTER" ]; then
+  echo "GATE 2b FAIL: ath11k.ko is byte-identical to pass 1 ($HASH_KO_BEFORE)" | tee -a build.log
+  GATE_FAIL=1
+else
+  echo "GATE 2b OK: ath11k.ko changed by the fix" | tee -a build.log
+fi
+
+IMG2="$(find bin/targets/ipq50xx -name '*nand-factory.ubi' 2>/dev/null | head -1)"
+[ -n "$IMG2" ] || IMG2="$(find bin/targets/ipq50xx -name '*.ubi' 2>/dev/null | head -1)"
+HASH2="$(sha256sum "$IMG2" 2>/dev/null | cut -d' ' -f1)"
+echo "pass2 image: $IMG2 sha256=$HASH2" | tee -a build.log
+if [ -n "$HASH2" ] && [ "$HASH2" != "$HASH1" ]; then
+  echo "GATE 3 OK: firmware image rebuilt with the fixed ath11k ($HASH1 -> $HASH2)" | tee -a build.log
+else
+  echo "GATE 3 FAIL: firmware image unchanged ($HASH1) -- fixed module did not reach the image" | tee -a build.log
+  GATE_FAIL=1
+fi
+
+if [ "$rc4" -ne 0 ] || [ "$GATE_FAIL" -ne 0 ]; then
+  echo "ERROR: Build#25 ath11k fix is not verified -- refusing to publish this firmware" | tee -a build.log
+  exit 1
+fi
+
 echo "BUILD OK" | tee -a build.log
