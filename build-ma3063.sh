@@ -156,6 +156,37 @@ fi
 rm -f "$LINUX/scripts/kconfig/conf" "$LINUX/scripts/kconfig/conf.o" 2>/dev/null
 echo "removed stale conf + conf.o -> kernel Makefile recompiles from patched conf.c" | tee -a build.log
 
+log "[6b/8] inject GD5F2GM7REYIGR SPI-NAND into nand_ids.c"
+NID="$LINUX/drivers/mtd/nand/raw/nand_ids.c"
+if [ -f "$NID" ]; then
+  python3 - "$NID" <<'PYEOF2' 2>&1 | tee -a build.log
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='replace').read()
+if 'GD5F2GM7REYIGR' in s:
+    print("nand_ids.c already has GD5F2GM7REYIGR, skip"); sys.exit(0)
+# Anchor: insert before the first LEGACY_ID_NAND line (end of the .id table's
+# modern entries), same placement style as upstream patch 407.
+anchor = 'LEGACY_ID_NAND('
+idx = s.find(anchor)
+if idx < 0:
+    print("ERROR: LEGACY_ID_NAND anchor not found in %s" % p); sys.exit(2)
+entry = ('\t{"GD5F2GM7REYIGR SPI NAND 2G",\n'
+         '\t\t{ .id = {0xc8, 0x82} },\n'
+         '\t\tSZ_2K, SZ_256, SZ_128K, 0, 2, 128, NAND_ECC_INFO(8, SZ_512) },\n\n')
+s = s[:idx] + entry + s[idx:]
+open(p, 'w').write(s)
+print("injected GD5F2GM7REYIGR (0xc8 0x82) into nand_ids.c")
+PYEOF2
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "nand_ids.c injection FAILED rc=$rc" | tee -a build.log
+    exit "$rc"
+  fi
+else
+  echo "WARN: nand_ids.c not found at $NID (kernel layout changed?) -- continuing" | tee -a build.log
+fi
+
 log "[7/8] prepare pass 2: configure kernel with patched conf.c (no prompt)"
 make target/linux/prepare V=s >> build.log 2>&1
 rc2=$?
