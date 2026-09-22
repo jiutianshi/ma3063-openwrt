@@ -510,6 +510,8 @@ helper = (
 '{\n'
 '\tint i;\n'
 '\n'
+'\tpr_err("MA3063DBG ubi_init entry mtd_devs=%d\\n", mtd_devs);\n'
+'\n'
 '\tfor (i = 0; i < 64; i++) {\n'
 '\t\tstruct mtd_info *dbgm = get_mtd_device(NULL, i);\n'
 '\n'
@@ -524,13 +526,24 @@ helper = (
 '}\n'
 '\n')
 
-a = 'static int __init ubi_init(void)\n{\n'
-if s.count(a) == 1:
-    s = s.replace(a, helper + a +
-                  '\tpr_err("MA3063DBG ubi_init entry mtd_devs=%d\\n", mtd_devs);\n', 1)
-    print("ubi/build.c: dump helper + entry print inserted")
+anchor_fn = 'static int __init ubi_init(void)\n{\n'
+decl = '\tint err, i, k;\n'
+fn_i = s.find(anchor_fn)
+if fn_i < 0:
+    print("WARN: ubi_init anchor not found -- helper skipped")
 else:
-    print("WARN: ubi_init anchor count=%d -- helper skipped" % s.count(a))
+    # The call must land AFTER the function's declarations: 5.15 is built with
+    # -Werror=declaration-after-statement (ISO C90), so a statement placed right
+    # after "{" fails the build ("ISO C90 forbids mixed declarations and code").
+    s = s[:fn_i] + helper + s[fn_i:]
+    fn_i += len(helper)
+    decl_i = s.find(decl, fn_i)
+    if decl_i < 0:
+        print("WARN: ubi_init declaration anchor missing -- dump call skipped")
+    else:
+        ins_at = decl_i + len(decl)
+        s = s[:ins_at] + '\n\tma3063_dbg_dump_mtds();\n' + s[ins_at:]
+        print("ubi/build.c: dump helper + call inserted after declarations")
 
 key = 'cannot open mtd %s'
 i = s.find(key)
