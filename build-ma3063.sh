@@ -688,6 +688,56 @@ else
   echo "WARN: 11-ath11k-caldata not found -- continuing" | tee -a build.log
 fi
 
+log "[6j/9] MA3063 network / MAC setup (02_network)"
+# ---------------------------------------------------------------------------
+# Build#28.  Two things the running image had to be fixed by hand after every
+# nand flash (uci settings live in the overlay, which a raw `nand write` wipes):
+#
+#   1. eth1 was never assigned to WAN -- only eth0 sat in br-lan.
+#   2. the wired interfaces had no factory MAC at all.
+#
+# This file is base-files (part of the OpenWrt *source tree*), not a package
+# build dir, so editing it in place is safe: nothing re-extracts it.
+#
+# Scope note (verified): the WIRELESS MAC cannot be fixed here.  ath11k's ahb.c
+# has no of_get_mac_address(); the phy MAC comes from the BDF via
+# ath11k_hw_get_mac_from_pdev_id(), which is why it shows the Qualcomm default
+# 00:03:7f:...  That stays a uci-level setting (option macaddr on the
+# wifi-iface), which does survive reboot and sysupgrade.
+# ---------------------------------------------------------------------------
+NET="target/linux/ipq50xx/base-files/etc/board.d/02_network"
+if [ -f "$NET" ]; then
+  python3 "$PATCHES/ma3063-network-mac.py" "$NET" "$PATCHES/b28_net.txt" 2>&1 | tee -a build.log
+  rcnet=${PIPESTATUS[0]}
+  if [ "$rcnet" -ne 0 ]; then
+    echo "ERROR: 02_network injection FAILED rc=$rcnet" | tee -a build.log
+    exit "$rcnet"
+  fi
+
+  # GATE N: every piece must be present, and the result must still be valid sh
+  NETFAIL=0
+  for pat in 'ruijie,rg-ma3063)' \
+             'ucidef_set_interfaces_lan_wan "eth0" "eth1"' \
+             'ipq50xx_setup_macs()' \
+             'ipq50xx_setup_macs $board' \
+             'mtd_get_mac_binary "0:ART" 0'; do
+    if ! grep -qF "$pat" "$NET"; then
+      echo "GATE N FAIL: 02_network lacks: $pat" | tee -a build.log
+      NETFAIL=1
+    fi
+  done
+  if ! sh -n "$NET"; then
+    echo "GATE N FAIL: 02_network is not valid shell" | tee -a build.log
+    NETFAIL=1
+  fi
+  if [ "$NETFAIL" -ne 0 ]; then
+    exit 1
+  fi
+  echo "GATE N OK: 02_network has the ruijie interface + MAC rules and parses cleanly" | tee -a build.log
+else
+  echo "WARN: $NET not found -- 02_network injection skipped" | tee -a build.log
+fi
+
 log "[7/9] prepare pass 2: configure kernel with patched conf.c (no prompt)"
 make target/linux/prepare V=s >> build.log 2>&1
 rc2=$?
