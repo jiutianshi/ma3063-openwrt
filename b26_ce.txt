@@ -1,0 +1,22 @@
+=== MA3063 ath11k IPQ5018 CE-register remap fix ===
+ath11k source dir: /home/runner/work/ma3063-openwrt/ma3063-openwrt/openwrt/build_dir/target-aarch64_cortex-a53_musl/linux-ipq50xx_aarch64/backports-6.1.24/drivers/net/wireless/ath/ath11k
+OK   hw.h: replaced ATH11K_CE_OFFSET define with the tag macros
+OK   ahb.c: read32 rewritten
+OK   ahb.c: write32 rewritten
+OK   ahb.c: removed 6 x ATH11K_CE_OFFSET(ab)
+OK   hal.c: removed 6 x ATH11K_CE_OFFSET(ab)
+     (total ATH11K_CE_OFFSET uses removed outside ahb.c: 6)
+OK   hw.c: ipq5018_regs -- tagged 4 CE register values
+OK   hw.c: ath11k_ce_ie_addr_ipq5018 -- tagged 3 addresses
+
+--- summary ---
+changed: 7
+  + hw.h: ATH11K_CE_OFFSET -> ATH11K_REG_TYPE_* macros
+  + ahb.c: ath11k_ahb_read32 dispatches on the register-space tag
+  + ahb.c: ath11k_ahb_write32 dispatches on the register-space tag
+  + ahb.c: removed 6 x ATH11K_CE_OFFSET(ab)
+  + hal.c: removed 6 x ATH11K_CE_OFFSET(ab)
+  + hw.c: ipq5018_regs -- tagged 4 CE register values
+  + hw.c: ath11k_ce_ie_addr_ipq5018 -- tagged 3 addresses
+failed : 0
+hw.c ATH11K_REG_TYPE_CE count: 7 (expect 7: 4 regs + 3 ie addrs)
