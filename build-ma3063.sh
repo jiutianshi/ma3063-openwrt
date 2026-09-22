@@ -713,7 +713,7 @@ IMG1="$(find bin/targets/ipq50xx -name '*nand-factory.ubi' 2>/dev/null | head -1
 HASH1="$(sha256sum "$IMG1" 2>/dev/null | cut -d' ' -f1)"
 echo "pass1 image: $IMG1 sha256=$HASH1" | tee -a build.log
 
-log "[9/9] ath11k: disable coldboot calibration for IPQ5018/QCN6122 + rebuild"
+log "[9/9] ath11k: disable coldboot calibration for IPQ5018/QCN6122 (package patch) + rebuild"
 # ---------------------------------------------------------------------------
 # Build#24 boot result (serial log):
 #   [19.222283] Unable to handle kernel paging request at virtual address
@@ -739,9 +739,29 @@ log "[9/9] ath11k: disable coldboot calibration for IPQ5018/QCN6122 + rebuild"
 # files/.../ipq5018-ruijie-ma3063.dts).  The hzyitc 23.05 tree predates that
 # fix: patch 0019 (IPQ5018) and patch 301 (QCN6122) leave both fields true.
 #
-# The mac80211/backports source only exists after a build, so the injection
-# happens here, after pass 1, and is followed by a forced package rebuild plus
-# three gates that make a silent no-op impossible.
+# Why the change is turned into a *package patch* instead of an in-place edit
+# ---------------------------------------------------------------------------
+# Build#25 (first attempt) edited the extracted core.c in place and then ran
+# make.  That failed, and the gates caught it:
+#
+#     GATE 1 FAIL: MA3063DBG_COLDBOOT missing from ath11k/core.c
+#     GATE 2b FAIL: ath11k.ko is byte-identical to pass 1
+#
+# The reason is in package/kernel/mac80211/Makefile:
+#
+#     PKG_BUILD_DIR := $(KERNEL_BUILD_DIR)/backports-$(PKG_VERSION)
+#     define Build/Prepare
+#         rm -rf $(PKG_BUILD_DIR)      <-- wipes the whole source tree
+#         mkdir -p $(PKG_BUILD_DIR)
+#         $(PKG_UNPACK)                <-- re-extracts the tarball
+#         $(Build/Patch)               <-- re-applies patches/ath11k/*.patch
+#         ...
+#
+# so an in-place edit cannot survive a re-prepare.  The fix therefore: run the
+# injector once on the pass-1 source to *generate* a unified diff, install that
+# diff as patches/ath11k/906-*.patch, then wipe $(PKG_BUILD_DIR) and let make
+# re-extract + re-apply every patch, ours included.  From then on the change is
+# part of the normal patch series and survives any number of re-prepares.
 # ---------------------------------------------------------------------------
 BP="$(find build_dir -maxdepth 3 -type d -name 'backports-*' 2>/dev/null | head -1)"
 if [ -z "$BP" ]; then
@@ -754,28 +774,78 @@ if [ ! -f "$CORE" ]; then
   echo "ERROR: $CORE not found" | tee -a build.log
   exit 1
 fi
-KO_COUNT_BEFORE="$(find "$BP" -name 'ath11k.ko' | wc -l)"
-KO_BEFORE="$(find "$BP" -name 'ath11k.ko' | head -1)"
+KO_TREE_BEFORE="$BP/drivers/net/wireless/ath/ath11k/ath11k.ko"
 HASH_KO_BEFORE=""
-if [ -n "$KO_BEFORE" ]; then
-  HASH_KO_BEFORE="$(sha256sum "$KO_BEFORE" | cut -d' ' -f1)"
+if [ -f "$KO_TREE_BEFORE" ]; then
+  HASH_KO_BEFORE="$(sha256sum "$KO_TREE_BEFORE" | cut -d' ' -f1)"
 fi
-echo "pass1 ath11k.ko: ${KO_BEFORE:-<none>} sha256=${HASH_KO_BEFORE:-<none>}" | tee -a build.log
+echo "pass1 ath11k.ko (build tree): ${HASH_KO_BEFORE:-<none>}" | tee -a build.log
+
+PRISTINE=/tmp/ma3063-core.c.pristine
+cp -f "$CORE" "$PRISTINE"
+echo "pristine copy: $PRISTINE ($(wc -c < "$PRISTINE") bytes)" | tee -a build.log
 
 python3 "$PATCHES/ma3063-ath11k-coldboot.py" "$CORE" 2>&1 | tee -a build.log
 rcfix=${PIPESTATUS[0]}
 if [ "$rcfix" -ne 0 ]; then
-  echo "ERROR: ath11k coldboot-calibration patch FAILED rc=$rcfix" | tee -a build.log
+  echo "ERROR: ath11k coldboot-calibration injector FAILED rc=$rcfix" | tee -a build.log
   exit "$rcfix"
 fi
 
-# Force the mac80211 package to recompile: drop only its .built* stamps (the
-# .prepared* stamps must survive, otherwise OpenWrt re-extracts the tarball and
-# wipes the injection) plus the ath11k objects.
-find "$BP" -maxdepth 1 -name '.built*' -delete 2>/dev/null || true
-rm -f "$BP"/drivers/net/wireless/ath/ath11k/*.o \
-      "$BP"/drivers/net/wireless/ath/ath11k/*.ko 2>/dev/null || true
-echo "dropped mac80211 .built stamps + ath11k objects -> kbuild must relink ath11k.ko" | tee -a build.log
+# GATE 0: the edit really landed in the freshly extracted source.
+if grep -q MA3063DBG_COLDBOOT "$CORE"; then
+  echo "GATE 0 OK: marker present in the extracted core.c" | tee -a build.log
+else
+  echo "GATE 0 FAIL: marker missing right after the injector ran" | tee -a build.log
+  exit 1
+fi
+
+# --- turn the edit into a real package patch -------------------------------
+PDIR="$OPENWRT/package/kernel/mac80211/patches/ath11k"
+mkdir -p "$PDIR"
+PATCHFILE="$PDIR/906-wifi-ath11k-disable-coldboot-calibration-ipq5018-qcn6122.patch"
+{
+  echo "From: MA3063 build script <wb@local>"
+  echo "Date: $(date -R)"
+  echo "Subject: [PATCH] wifi: ath11k: disable coldboot calibration for ipq5018/qcn6122"
+  echo
+  echo "Port of openwrt PR #19083 (patches 0907 + 920) onto the hzyitc 23.05"
+  echo "backports tree, which predates that fix."
+  echo
+  echo "Coldboot calibration makes the firmware request a fixed CALDB chunk that"
+  echo "the host has to back with the physical address 0x4A400000"
+  echo "(ATH11K_QMI_CALDB_ADDRESS).  The board DTS reserves that range as"
+  echo "tz_apps/no-map, so it is absent from the linear map and any host-side"
+  echo "touch page-faults -- which is the Build#24 kernel panic."
+  echo
+  echo "Generated by ma3063-ath11k-coldboot.py from the pass-1 source."
+  echo "---"
+  diff -u --label a/drivers/net/wireless/ath/ath11k/core.c \
+          --label b/drivers/net/wireless/ath/ath11k/core.c \
+          "$PRISTINE" "$CORE" || true
+} > "$PATCHFILE"
+echo "package patch written: $PATCHFILE ($(wc -l < "$PATCHFILE") lines)" | tee -a build.log
+sed -n '1,12p' "$PATCHFILE" | tee -a build.log
+
+# --- pre-flight: the patch must apply cleanly and reproduce the edit --------
+rm -rf /tmp/pfcheck
+mkdir -p /tmp/pfcheck/drivers/net/wireless/ath/ath11k
+cp -f "$PRISTINE" /tmp/pfcheck/drivers/net/wireless/ath/ath11k/core.c
+if ! patch -p1 --silent -d /tmp/pfcheck -i "$PATCHFILE"; then
+  echo "GATE P FAIL: generated patch does not apply to the pristine source" | tee -a build.log
+  exit 1
+fi
+if ! cmp -s /tmp/pfcheck/drivers/net/wireless/ath/ath11k/core.c "$CORE"; then
+  echo "GATE P FAIL: patch round-trip does not reproduce the injected file" | tee -a build.log
+  exit 1
+fi
+echo "GATE P OK: patch applies to the pristine source and round-trips exactly" | tee -a build.log
+
+# Force a full re-prepare: Build/Prepare does `rm -rf $(PKG_BUILD_DIR)` and then
+# re-extracts + re-applies patches/*.patch, so wiping it is what makes our new
+# 906 patch take effect (and it also invalidates every stamp inside it).
+rm -rf "$BP"
+echo "wiped $BP -> Build/Prepare will re-unpack and re-apply all ath11k patches" | tee -a build.log
 
 make -j"$(nproc)" V=s >> build.log 2>&1
 rc4=$?
@@ -785,27 +855,28 @@ MARKER="MA3063DBG_COLDBOOT"
 GATE_FAIL=0
 
 if grep -q "$MARKER" "$CORE"; then
-  echo "GATE 1 OK: $MARKER present in ath11k/core.c" | tee -a build.log
+  echo "GATE 1 OK: $MARKER present in ath11k/core.c (patch survived the rebuild)" | tee -a build.log
 else
   echo "GATE 1 FAIL: $MARKER missing from ath11k/core.c" | tee -a build.log
   GATE_FAIL=1
 fi
 
-KO="$(find "$BP" -name 'ath11k.ko' | head -1)"
-if [ -n "$KO" ] && grep -q "$MARKER" "$KO"; then
-  echo "GATE 2 OK: $MARKER present in $(basename "$KO") (ko_count=$KO_COUNT_BEFORE)" | tee -a build.log
-elif [ -z "$KO" ] && grep -q "$MARKER" "$BP/drivers/net/wireless/ath/ath11k/core.o"; then
+KO="$BP/drivers/net/wireless/ath/ath11k/ath11k.ko"
+if [ -f "$KO" ] && grep -q "$MARKER" "$KO"; then
+  echo "GATE 2 OK: $MARKER present in the freshly built $(basename "$KO")" | tee -a build.log
+elif [ -f "$BP/drivers/net/wireless/ath/ath11k/core.o" ] && \
+     grep -q "$MARKER" "$BP/drivers/net/wireless/ath/ath11k/core.o"; then
   echo "GATE 2 OK: $MARKER present in core.o (no ath11k.ko -- built-in config?)" | tee -a build.log
 else
-  echo "GATE 2 FAIL: rebuilt ath11k module does not carry $MARKER -- it was not recompiled" | tee -a build.log
+  echo "GATE 2 FAIL: built ath11k objects do not carry $MARKER -- not recompiled" | tee -a build.log
   GATE_FAIL=1
 fi
 
 HASH_KO_AFTER=""
-if [ -n "$KO" ]; then
+if [ -f "$KO" ]; then
   HASH_KO_AFTER="$(sha256sum "$KO" | cut -d' ' -f1)"
 fi
-echo "pass2 ath11k.ko: ${KO:-<none>} sha256=${HASH_KO_AFTER:-<none>}" | tee -a build.log
+echo "pass2 ath11k.ko (build tree): ${HASH_KO_AFTER:-<none>}" | tee -a build.log
 if [ -n "$HASH_KO_BEFORE" ] && [ "$HASH_KO_BEFORE" = "$HASH_KO_AFTER" ]; then
   echo "GATE 2b FAIL: ath11k.ko is byte-identical to pass 1 ($HASH_KO_BEFORE)" | tee -a build.log
   GATE_FAIL=1
