@@ -106,6 +106,18 @@ for f in $(find target/linux/ipq50xx -name 'config-5.15*' 2>/dev/null); do
     echo "CONFIG_MTD_OF_PARTS=y" >> "$f"
     echo "  MTD_OF_PARTS: appended =y to $f" | tee -a build.log
   fi
+  # MA3063: rootfs is mounted as /dev/ubiblock0_1 (build#21 serial log shows
+  # "Waiting for root device /dev/ubiblock0_1"), so ubiblock must exist before
+  # prepare_namespace(). Without CONFIG_MTD_UBI_BLOCK the UBI volume block
+  # devices are never created and the root mount degrades to mtdblockN
+  # (which then fails with "SQUASHFS error: unable to read id index table"
+  # because mtdblockN exposes UBI headers, not raw squashfs).
+  if grep -q '^CONFIG_MTD_UBI_BLOCK=y' "$f"; then
+    echo "  MTD_UBI_BLOCK: already =y in $f" | tee -a build.log
+  else
+    echo "CONFIG_MTD_UBI_BLOCK=y" >> "$f"
+    echo "  MTD_UBI_BLOCK: appended =y to $f" | tee -a build.log
+  fi
   {
     grep -q "CONFIG_ARM64_EPAN" "$f"        || echo "CONFIG_ARM64_EPAN=y"
     grep -q "CONFIG_ARM64_PA_BITS_48" "$f"  || echo "CONFIG_ARM64_PA_BITS_48=y"
@@ -287,6 +299,274 @@ PYEOF4
   fi
 else
   echo "WARN: nand_base.c not found at $NBB -- continuing" | tee -a build.log
+fi
+
+log "[6e/8] MTD partition pipeline diagnostics + driver-provided partition fallback"
+# Build#21 result: the SPI-NAND chip is now detected correctly, but the kernel
+# never registers any MTD partition (no "N partitions found" / "Creating N MTD
+# partitions" lines at all) so UBI fails with "cannot open mtd rootfs, error -2".
+# Static analysis of the whole chain came back clean:
+#   qcom_nandc.c  nand_set_flash_node(chip, dn) -> mtd->dev.of_node = nandcs@0
+#   mtdcore.c     mtd_set_dev_defaults() does NOT touch mtd->dev.of_node
+#   mtdpart.c     parse_mtd_partitions() -> mtd_part_of_parse() -> ofpart
+#   ofpart_core.c parse_fixed_partitions() looks up nandcs@0/partitions
+#   the built DTB really contains /soc/qpic-nand@79b0000/nandcs@0/partitions
+#   drivers/mtd/Makefile links nand/ *before* ubi/, so ordering is fine
+# The remaining possibilities are runtime only (of_node lost/ pointing at the
+# controller node, parser silently returning 0, nand_scan() bailing out after
+# ident). So: (1) trace every stage, (2) hand mtd_device_parse_register() the
+# board partition table as its documented "driver-provided fallback"
+# (mtdcore.c:969 "Prefer parsed partitions over driver-provided fallback" - the
+# array is only used when the parsers yield nothing, so it cannot duplicate
+# partitions when ofpart works).
+QNC="$LINUX/drivers/mtd/nand/raw/qcom_nandc.c"
+if [ -f "$QNC" ]; then
+  python3 - "$QNC" <<'PYEOF5' 2>&1 | tee -a build.log
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='replace').read()
+if 'MA3063DBG_PARTS' in s:
+    print("qcom_nandc.c already instrumented, skip"); sys.exit(0)
+
+# struct mtd_partition is only forward-declared by mtd.h -> need the real header
+inc = '#include <linux/mtd/partitions.h>'
+a = '#include <linux/mtd/mtd.h>'
+if inc not in s:
+    if s.count(a) == 1:
+        s = s.replace(a, a + '\n' + inc, 1)
+        print("added " + inc)
+    else:
+        print("WARN: mtd.h include anchor count=%d" % s.count(a))
+
+# Board partition table -- mirrors the DTS partitions node under nandcs@0.
+# Designated initialisers only: struct mtd_partition is
+# {name, types, size, offset, mask_flags, add_flags, of_node} in 5.15, so the
+# historical positional order (offset, size) would be silently wrong.
+parts = [
+    ("0:SBL1",        0x0000000, 0x0080000, True),
+    ("0:MIBIB",       0x0080000, 0x0080000, True),
+    ("0:BOOTCONFIG",  0x0100000, 0x0040000, True),
+    ("0:BOOTCONFIG1", 0x0140000, 0x0040000, True),
+    ("0:QSEE",        0x0180000, 0x0100000, True),
+    ("0:QSEE_1",      0x0280000, 0x0100000, True),
+    ("0:DEVCFG",      0x0380000, 0x0040000, True),
+    ("0:DEVCFG_1",    0x03c0000, 0x0040000, True),
+    ("0:CDT",         0x0400000, 0x0040000, True),
+    ("0:CDT_1",       0x0440000, 0x0040000, True),
+    ("0:APPSBLENV",   0x0480000, 0x0080000, True),
+    ("0:APPSBL",      0x0500000, 0x0140000, True),
+    ("0:APPSBL_1",    0x0640000, 0x0140000, True),
+    ("0:ART",         0x0780000, 0x0100000, True),
+    ("0:TRAINING",    0x0880000, 0x0080000, True),
+    ("rootfs",        0x0900000, 0x4340000, False),
+    ("rootfs_1",      0x4c40000, 0x4340000, False),
+    ("ttyMTD",        0x8f80000, 0x0120000, True),
+    ("productinfo",   0x90a0000, 0x0080000, True),
+    ("data",          0x9120000, 0x6d80000, False),
+]
+tbl = '/* MA3063DBG_PARTS: fallback table, mirrors DTS nandcs@0/partitions */\n'
+tbl += 'static const struct mtd_partition ma3063_dbg_parts[] = {\n'
+for (nm, off, sz, ro) in parts:
+    tbl += '\t{ .name = "%s", .offset = 0x%x, .size = 0x%x%s },\n' % (
+        nm, off, sz, ", .mask_flags = MTD_WRITEABLE" if ro else "")
+tbl += '};\n\n'
+anchor = 'static const char * const probes[] = { "cmdlinepart", "ofpart", "qcomsmem", NULL };\n'
+if s.count(anchor) != 1:
+    print("ERROR: probes[] anchor count=%d -- abort" % s.count(anchor)); sys.exit(2)
+s = s.replace(anchor, tbl + anchor, 1)
+
+# trace nand_scan(): ident succeeding but scan_tail failing would return early
+# and skip mtd_device_parse_register() entirely -> no partitions, no parser log.
+a = '\tret = nand_scan(chip, 1);\n'
+if s.count(a) == 1:
+    s = s.replace(a, a + '\tpr_info("MA3063DBG nand_scan ret=%d\\n", ret);\n', 1)
+else:
+    print("WARN: nand_scan anchor count=%d" % s.count(a))
+
+# pass the fallback table + trace the of_node the parser will actually see
+a = '\tret = mtd_device_parse_register(mtd, probes, NULL, NULL, 0);\n'
+if s.count(a) != 1:
+    print("ERROR: mtd_device_parse_register anchor count=%d -- abort" % s.count(a)); sys.exit(2)
+new = ('\tpr_info("MA3063DBG pre-parse name=%s of_node=%s dn=%s\\n",\n'
+       '\t\tmtd->name,\n'
+       '\t\tmtd->dev.of_node ? mtd->dev.of_node->full_name : "(null)",\n'
+       '\t\tdn ? dn->full_name : "(null)");\n'
+       '\tret = mtd_device_parse_register(mtd, probes, NULL, ma3063_dbg_parts,\n'
+       '\t\t\t\t\tARRAY_SIZE(ma3063_dbg_parts));\n'
+       '\tpr_info("MA3063DBG post-parse ret=%d has_parts=%d\\n", ret,\n'
+       '\t\t!list_empty(&mtd->partitions));\n')
+s = s.replace(a, new, 1)
+
+# trace the per-child probe loop (which child failed, if any)
+a = '\t\tret = qcom_nand_host_init_and_register(nandc, host, child);\n'
+if s.count(a) == 1:
+    s = s.replace(a, a + '\t\tpr_info("MA3063DBG child=%s init_ret=%d\\n",\n'
+                          '\t\t\tchild->full_name, ret);\n', 1)
+else:
+    print("WARN: child init anchor count=%d" % s.count(a))
+
+open(p, 'w').write(s)
+print("qcom_nandc.c: diagnostics + fallback partition table installed")
+PYEOF5
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "qcom_nandc.c partition instrumentation FAILED rc=$rc" | tee -a build.log
+    exit "$rc"
+  fi
+else
+  echo "WARN: qcom_nandc.c not found at $QNC -- continuing" | tee -a build.log
+fi
+
+log "[6f/8] MTD parser diagnostics (mtdpart.c + ofpart_core.c)"
+MPT="$LINUX/drivers/mtd/mtdpart.c"
+if [ -f "$MPT" ]; then
+  python3 - "$MPT" <<'PYEOF6' 2>&1 | tee -a build.log
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='replace').read()
+if 'MA3063DBG of_parse' in s:
+    print("mtdpart.c already instrumented, skip"); sys.exit(0)
+a = '\tnp = mtd_get_of_node(master);\n\tif (mtd_is_partition(master))\n'
+if s.count(a) == 1:
+    s = s.replace(a, '\tnp = mtd_get_of_node(master);\n'
+                     '\tpr_info("MA3063DBG of_parse master=%s mtd_of=%s\\n",\n'
+                     '\t\tmaster->name, np ? np->full_name : "(null)");\n'
+                     '\tif (mtd_is_partition(master))\n', 1)
+    print("mtd_part_of_parse(): of_node print inserted")
+else:
+    print("WARN: mtd_part_of_parse anchor count=%d -- skipped" % s.count(a))
+a = '\t\tnp = of_get_child_by_name(np, "partitions");\n'
+if s.count(a) == 1:
+    s = s.replace(a, a + '\tpr_info("MA3063DBG of_parse parts_node=%s\\n",\n'
+                          '\t\tnp ? np->full_name : "(null)");\n', 1)
+    print("mtd_part_of_parse(): partitions-node print inserted")
+else:
+    print("WARN: partitions node anchor count=%d -- skipped" % s.count(a))
+open(p, 'w').write(s)
+PYEOF6
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "mtdpart.c instrumentation FAILED rc=$rc" | tee -a build.log
+    exit "$rc"
+  fi
+else
+  echo "WARN: mtdpart.c not found at $MPT -- continuing" | tee -a build.log
+fi
+
+OPC="$LINUX/drivers/mtd/parsers/ofpart_core.c"
+if [ -f "$OPC" ]; then
+  python3 - "$OPC" <<'PYEOF7' 2>&1 | tee -a build.log
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='replace').read()
+if 'MA3063DBG fixed_parse' in s:
+    print("ofpart_core.c already instrumented, skip"); sys.exit(0)
+# parse_fixed_partitions() only -- parse_ofoldpart_partitions() uses `dp`.
+a = ('\t/* Pull of_node from the master device node */\n'
+     '\tmtd_node = mtd_get_of_node(master);\n')
+if s.count(a) == 1:
+    s = s.replace(a, a + '\tpr_info("MA3063DBG fixed_parse master=%s mtd_node=%s\\n",\n'
+                          '\t\tmaster->name,\n'
+                          '\t\tmtd_node ? mtd_node->full_name : "(null)");\n', 1)
+    print("parse_fixed_partitions(): entry print inserted")
+else:
+    print("WARN: ofpart_core anchor count=%d -- skipped" % s.count(a))
+a = '\tif (nr_parts == 0)\n\t\treturn 0;\n'
+if s.count(a) == 1:
+    s = s.replace(a, '\tpr_info("MA3063DBG fixed_parse nr_parts=%d\\n", nr_parts);\n' + a, 1)
+    print("parse_fixed_partitions(): nr_parts print inserted")
+else:
+    print("WARN: nr_parts anchor count=%d -- skipped" % s.count(a))
+open(p, 'w').write(s)
+PYEOF7
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "ofpart_core.c instrumentation FAILED rc=$rc" | tee -a build.log
+    exit "$rc"
+  fi
+else
+  echo "WARN: ofpart_core.c not found at $OPC -- continuing" | tee -a build.log
+fi
+
+log "[6g/8] UBI attach diagnostics + late-init deferral"
+# If ubi_init() runs before the NAND driver has registered its partitions, the
+# named attach ("ubi.mtd=rootfs") fails once with ENOENT and is never retried
+# (built-in UBI just `continue`s). The dump tells us whether "rootfs" was
+# missing because no partition existed at all, or because UBI ran too early.
+# Moving ubi_init to late_initcall_sync() keeps it well before
+# prepare_namespace() but after every device_initcall-level probe.
+UBI="$LINUX/drivers/mtd/ubi/build.c"
+if [ -f "$UBI" ]; then
+  python3 - "$UBI" <<'PYEOF8' 2>&1 | tee -a build.log
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', errors='replace').read()
+if 'MA3063DBG ubi_init' in s:
+    print("ubi/build.c already instrumented, skip"); sys.exit(0)
+
+helper = (
+'/* MA3063DBG: dump every registered MTD device (temporary diagnostic) */\n'
+'static void ma3063_dbg_dump_mtds(void)\n'
+'{\n'
+'\tint i;\n'
+'\n'
+'\tfor (i = 0; i < 64; i++) {\n'
+'\t\tstruct mtd_info *dbgm = get_mtd_device(NULL, i);\n'
+'\n'
+'\t\tif (IS_ERR(dbgm))\n'
+'\t\t\tcontinue;\n'
+'\t\tpr_err("MA3063DBG mtd%d name=%s size=%llu node=%s partition=%s\\n",\n'
+'\t\t       dbgm->index, dbgm->name, (unsigned long long)dbgm->size,\n'
+'\t\t       dbgm->dev.of_node ? dbgm->dev.of_node->full_name : "(null)",\n'
+'\t\t       dbgm->parent ? "yes" : "no");\n'
+'\t\tput_mtd_device(dbgm);\n'
+'\t}\n'
+'}\n'
+'\n')
+
+a = 'static int __init ubi_init(void)\n{\n'
+if s.count(a) == 1:
+    s = s.replace(a, helper + a +
+                  '\tpr_err("MA3063DBG ubi_init entry mtd_devs=%d\\n", mtd_devs);\n', 1)
+    print("ubi/build.c: dump helper + entry print inserted")
+else:
+    print("WARN: ubi_init anchor count=%d -- helper skipped" % s.count(a))
+
+key = 'cannot open mtd %s'
+i = s.find(key)
+if i < 0:
+    print("WARN: 'cannot open mtd %%s' anchor not found -- dump call skipped")
+else:
+    j = s.find('err);', i)
+    k = s.find('\n', j) if j > 0 else -1
+    if k < 0:
+        print("WARN: dump call insert point not found")
+    else:
+        s = s[:k + 1] + '\t\t\tma3063_dbg_dump_mtds();\n' + s[k + 1:]
+        print("ubi_init(): MTD dump call inserted after the attach failure")
+
+a = 'module_init(ubi_init);'
+# v5.15 already registers UBI from late_initcall(), i.e. after all
+# device_initcall-level probes, and drivers/mtd/Makefile links nand/ before
+# ubi/ -- so the named attach normally cannot race the NAND driver. Only force
+# a later (sync) level if some tree still uses an earlier initcall.
+if 'late_initcall(ubi_init);' in s or 'late_initcall_sync(ubi_init);' in s:
+    print("ubi_init: already registered from late_initcall -- no change")
+elif s.count(a) == 1:
+    s = s.replace(a, 'late_initcall_sync(ubi_init);', 1)
+    print("ubi_init: module_init -> late_initcall_sync")
+else:
+    print("WARN: no known ubi_init initcall anchor -- level unchanged")
+
+open(p, 'w').write(s)
+PYEOF8
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "ubi/build.c instrumentation FAILED rc=$rc" | tee -a build.log
+    exit "$rc"
+  fi
+else
+  echo "WARN: ubi/build.c not found at $UBI -- continuing" | tee -a build.log
 fi
 
 log "[7/8] prepare pass 2: configure kernel with patched conf.c (no prompt)"
